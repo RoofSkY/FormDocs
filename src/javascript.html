@@ -1,0 +1,1028 @@
+<!-- 클라이언트 스크립트. index.html에서 include_('javascript')로 끼워 넣는다. -->
+    <script>
+      (function () {
+        'use strict';
+
+        var app = document.getElementById('app');
+        var overlay = document.getElementById('overlay');
+        var dialog = document.getElementById('dialog');
+        var BOOT = readBoot();
+        var LIMITS = {}; // 글자 수 제한. 신청서 화면을 그릴 때 서버 값(BOOT.limits)으로 채운다.
+
+        /* 서버(Code.gs MESSAGES_)와 같은 문구 */
+        var MSG = {
+          notOption: '선택지에 없는 값입니다. 다시 골라 주세요.',
+        };
+
+        var state = null; // 신청서 화면 상태
+        var uid = 0;
+
+        render();
+        // 브라우저 뒤로/앞으로 가기를 하면 그 주소의 화면을 다시 불러온다.
+        if (canRun() && google.script.history) {
+          google.script.history.setChangeHandler(function (e) {
+            navigate((e && e.location && e.location.parameter) || {}, false);
+          });
+        }
+
+        /* ================= 공통 도우미 ================= */
+
+        function readBoot() {
+          try {
+            return JSON.parse(document.getElementById('boot').textContent);
+          } catch (err) {
+            return { page: 'error', error: { title: '화면을 불러오지 못했습니다', message: '페이지를 새로고침해 주세요.', problems: [] } };
+          }
+        }
+
+        /** 요소 만들기. 글자는 항상 textContent로 넣는다. (innerHTML 사용 안 함) */
+        function h(tag, props, children) {
+          var el = document.createElement(tag);
+          if (props) {
+            Object.keys(props).forEach(function (key) {
+              var v = props[key];
+              if (v === null || v === undefined || v === false) return;
+              if (key === 'class') el.className = v;
+              else if (key === 'text') el.textContent = v;
+              else if (key.indexOf('on') === 0) el.addEventListener(key.slice(2), v);
+              else el.setAttribute(key, v === true ? '' : String(v));
+            });
+          }
+          append(el, children);
+          return el;
+        }
+
+        function append(el, children) {
+          if (children === null || children === undefined || children === false) return;
+          if (Array.isArray(children)) {
+            children.forEach(function (c) {
+              append(el, c);
+            });
+          } else if (children instanceof Node) {
+            el.appendChild(children);
+          } else {
+            el.appendChild(document.createTextNode(String(children)));
+          }
+        }
+
+        function clear(el) {
+          while (el.firstChild) el.removeChild(el.firstChild);
+        }
+
+        function nextId() {
+          uid += 1;
+          return 'f' + uid;
+        }
+
+        /** https 주소만 링크로 쓴다. */
+        function safeUrl(url) {
+          return /^https:\/\//.test(String(url || '')) ? String(url) : '';
+        }
+
+        /** 웹앱 안에서 실행 중인지 (google.script.run 사용 가능) */
+        function canRun() {
+          return !!(window.google && google.script && google.script.run);
+        }
+
+        /**
+         * 화면 이동 링크. 누르면 서버에서 화면 데이터를 받아 그 자리에서 바꾸고 주소도 갱신한다.
+         * href는 새 탭으로 열 때를 위한 보조 주소다.
+         */
+        function navLink(params, props, children) {
+          var query = Object.keys(params)
+            .map(function (k) {
+              return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+            })
+            .join('&');
+          var base = safeUrl(BOOT.baseUrl);
+          var link = h('a', Object.assign({ href: base ? base + (query ? '?' + query : '') : '#' }, props), children);
+          link.addEventListener('click', function (e) {
+            if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || !canRun()) return;
+            e.preventDefault();
+            navigate(params, true);
+          });
+          return link;
+        }
+
+        /** 서버에서 화면 데이터를 받아 다시 그린다. */
+        function navigate(params, push) {
+          if (state && state.submitting) return;
+          showBusy('불러오는 중…');
+          google.script.run
+            .withSuccessHandler(function (data) {
+              overlay.hidden = true;
+              BOOT = data;
+              render();
+              // 주소창도 바꿔 두어 새로고침·주소 공유 시 같은 화면이 열리게 한다.
+              try {
+                if (push && google.script.history) google.script.history.push(params, params, '');
+              } catch (err) {
+                /* 주소 갱신 실패는 화면 이동에 영향 없음 */
+              }
+            })
+            .withFailureHandler(function (err) {
+              showDialog({
+                title: '화면을 불러오지 못했습니다',
+                message: '인터넷 연결을 확인한 뒤 다시 시도해 주세요.',
+                detail: err && err.message ? err.message : String(err || ''),
+              });
+            })
+            .loadPage(params);
+        }
+
+        function showBusy(message) {
+          clear(dialog);
+          append(dialog, [h('div', { class: 'spinner', 'aria-hidden': 'true' }), h('p', { text: message })]);
+          overlay.hidden = false;
+        }
+
+        function problemList(problems, kind) {
+          return h(
+            'ol',
+            { class: 'issue-list ' + (kind || '') },
+            problems.map(function (p) {
+              return h('li', null, [p.where ? h('span', { class: 'where', text: p.where + ' ' }) : null, p.text]);
+            }),
+          );
+        }
+
+        function render() {
+          clear(app);
+          window.scrollTo(0, 0);
+          state = null;
+          if (BOOT.limits) LIMITS = BOOT.limits;
+          if (BOOT.page === 'list') renderList();
+          else if (BOOT.page === 'form') renderForm();
+          else if (BOOT.page === 'check') renderCheck();
+          else renderError(BOOT.error || {});
+        }
+
+        /* ================= 목록 화면 ================= */
+
+        function renderList() {
+          app.appendChild(h('header', { class: 'page-head' }, [h('h1', { text: BOOT.appTitle || '신청서' }), h('p', { class: 'desc', text: '작성할 신청서를 고르세요.' })]));
+          var forms = BOOT.forms || [];
+          if (!forms.length) {
+            app.appendChild(h('div', { class: 'card empty', text: '지금 접수 중인 신청서가 없습니다.' }));
+          } else {
+            app.appendChild(
+              h(
+                'ul',
+                { class: 'form-list' },
+                forms.map(function (f) {
+                  return h('li', null, navLink({ form: f.id }, { class: 'form-link' }, [
+                    h('span', null, [h('strong', { text: f.name }), f.description ? h('span', { class: 'desc', text: f.description }) : null]),
+                    h('span', { class: 'chevron', 'aria-hidden': 'true', text: '›' }),
+                  ]));
+                }),
+              ),
+            );
+          }
+          app.appendChild(navLink({ check: '1' }, { class: 'footer-link', text: '관리자: 양식 점검' }));
+        }
+
+        /* ================= 오류 화면 ================= */
+
+        function renderError(error) {
+          var problems = error.problems || [];
+          var card = h('section', { class: 'card center-card' }, [
+            h('div', { class: 'icon danger', 'aria-hidden': 'true', text: '!' }),
+            h('h1', { text: error.title || '문제가 생겼습니다' }),
+            error.message ? h('p', { text: error.message }) : null,
+          ]);
+          if (problems.length) {
+            card.appendChild(
+              h('div', { class: 'admin-box' }, [
+                h('h2', { text: '관리자 확인 사항' }),
+                problemList(problems, 'danger'),
+                h('p', { class: 'note', text: '시트를 고친 뒤 이 화면을 새로고침하세요.' }),
+              ]),
+            );
+          }
+          var links = [navLink({}, { class: 'btn-secondary', text: '신청서 목록으로' })];
+          if (problems.length) links.push(navLink({ check: '1' }, { class: 'btn-secondary', text: '양식 점검 화면 열기' }));
+          card.appendChild(h('div', { class: 'buttons' }, links));
+          app.appendChild(card);
+        }
+
+        /* ================= 점검 화면 ================= */
+
+        function renderCheck() {
+          var report = BOOT.report || { problems: [], notes: [], forms: [] };
+          var counts = { ok: 0, warn: 0, danger: 0 };
+          report.forms.forEach(function (f) {
+            counts[f.errors.length ? 'danger' : f.warnings.length ? 'warn' : 'ok'] += 1;
+          });
+          app.appendChild(
+            h('header', { class: 'page-head' }, [
+              h('h1', { text: '양식 점검' }),
+              h('p', { class: 'desc', text: '점검 시각 ' + report.checkedAt + ' · 캐시를 비웠으므로 고친 내용이 바로 반영됩니다.' }),
+              h('div', { class: 'summary-row' }, [
+                h('span', { class: 'badge ok', text: '정상 ' + counts.ok }),
+                h('span', { class: 'badge warn', text: '확인 필요 ' + counts.warn }),
+                h('span', { class: 'badge danger', text: '오류 ' + counts.danger }),
+              ]),
+            ]),
+          );
+          if (report.problems.length) {
+            app.appendChild(h('section', { class: 'card' }, [h('h2', { text: '전체 설정 문제' }), problemList(report.problems, 'danger')]));
+          }
+          if (report.notes.length) {
+            app.appendChild(
+              h('section', { class: 'card' }, [
+                h('h2', { text: '설정' }),
+                h('ul', { class: 'issue-list notes' }, report.notes.map(function (n) {
+                  return h('li', { text: n });
+                })),
+              ]),
+            );
+          }
+          report.forms.forEach(function (f) {
+            var status = f.errors.length ? ['danger', '오류'] : f.warnings.length ? ['warn', '확인 필요'] : ['ok', '정상'];
+            var card = h('section', { class: 'card' }, [
+              h('div', { class: 'check-head' }, [
+                h('h2', { text: f.name || '(양식이름 없음)' }),
+                h('span', { class: 'check-id', text: f.id || '(양식ID 없음)' }),
+                h('span', { class: 'badge ' + status[0], text: status[1] }),
+                f.enabled === false ? h('span', { class: 'badge muted', text: '사용 안 함' }) : null,
+              ]),
+            ]);
+            if (f.errors.length) card.appendChild(problemList(f.errors, 'danger'));
+            if (f.warnings.length) card.appendChild(problemList(f.warnings, 'warn'));
+            if (f.notes.length) {
+              card.appendChild(h('ul', { class: 'issue-list notes' }, f.notes.map(function (n) {
+                return h('li', { text: n });
+              })));
+            }
+            if (f.id && f.enabled !== false && !f.errors.length) card.appendChild(h('p', null, navLink({ form: f.id }, { text: '신청서 열어 보기 ›' })));
+            app.appendChild(card);
+          });
+          if (!report.forms.length && !report.problems.length) {
+            app.appendChild(h('div', { class: 'card empty', text: '양식목록에 양식이 없습니다.' }));
+          }
+        }
+
+        /* ================= 신청서 화면 ================= */
+
+        /**
+         * 양식 문서의 내용을 그대로 보여 주고, 각 블록(문단·표) 아래에
+         * 그 블록에서 처음 나온 {{항목}}의 입력 칸을 둔다.
+         */
+        function renderForm() {
+          var form = BOOT.form;
+          state = { form: form, controls: {}, blanks: {}, attempted: false, submitting: false };
+          clear(app);
+          window.scrollTo(0, 0);
+
+          // 문서에 '제목' 스타일 문단이 있으면 그것을 화면 제목으로 쓴다.
+          var hasTitle = form.blocks.some(function (b) {
+            return b.s === 'title';
+          });
+          app.appendChild(
+            h('header', { class: 'page-head' }, [
+              navLink({}, { class: 'back', text: '‹ 신청서 목록' }),
+              hasTitle ? null : h('h1', { text: form.name }),
+              form.description ? h('p', { class: 'desc', text: form.description }) : null,
+            ]),
+          );
+
+          var fieldsAt = {}; // 블록 번호 → 그 블록에서 처음 나온 입력 칸 번호들
+          form.fields.forEach(function (field, index) {
+            (fieldsAt[field.block] = fieldsAt[field.block] || []).push(index);
+          });
+
+          var formEl = h('form', { novalidate: true, autocomplete: 'off' });
+          var card = null;
+          var hasContent = false;
+          function newCard() {
+            card = h('section', { class: 'card' });
+            formEl.appendChild(card);
+            hasContent = false;
+          }
+          newCard();
+
+          form.blocks.forEach(function (block, index) {
+            // 문서의 '제목 1'·'제목 2' 문단에서 화면 칸을 나눈다.
+            if ((block.s === 'h1' || block.s === 'h2') && hasContent) newCard();
+            var el = renderBlock(block);
+            if (el.classList.contains('doc-gap')) {
+              // 칸 맨 앞의 빈 줄과 연속된 빈 줄은 하나로 줄인다.
+              if (card.lastChild && !card.lastChild.classList.contains('doc-gap')) card.appendChild(el);
+            } else {
+              card.appendChild(el);
+              if (block.s !== 'title') hasContent = true; // 문서 제목은 다음 칸과 함께 둔다.
+            }
+            (fieldsAt[index] || []).forEach(function (fieldIndex) {
+              var field = form.fields[fieldIndex];
+              var control = createControl(field, fieldIndex);
+              card.appendChild(control.wrapper);
+              state.controls[field.name] = control;
+              hasContent = true;
+            });
+          });
+
+          var summary = h('p', { class: 'form-summary', role: 'alert', hidden: true });
+          var submitBtn = h('button', { type: 'submit', class: 'btn-primary', text: '제출하기' });
+          formEl.appendChild(h('div', { class: 'submit-area' }, [summary, submitBtn, h('p', { class: 'note', text: '제출하면 입력한 내용이 문서로 저장됩니다.' })]));
+          state.summary = summary;
+          state.submitBtn = submitBtn;
+
+          formEl.addEventListener('submit', onSubmit);
+          formEl.addEventListener('input', onFieldChange);
+          formEl.addEventListener('change', onFieldChange);
+          // 한 줄 입력칸에서 Enter를 눌러 실수로 제출되지 않게 한다.
+          formEl.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.preventDefault();
+          });
+          app.appendChild(formEl);
+          applyVisibility();
+        }
+
+        /* ---------- 양식 문서 내용 그리기 (글자는 textContent, 서식은 style 속성으로만) ---------- */
+
+        /** 문서 블록(문단·목록·표) → 화면 요소. 빈 문단은 'doc-gap' */
+        function renderBlock(block) {
+          if (block.t === 'table') return renderTable(block);
+          var runs = block.r || [];
+          var hasText = runs.some(function (r) {
+            return r.f || r.cm || (r.x && r.x.trim());
+          });
+          if (!hasText) return h('div', { class: 'doc-gap' });
+          var tag = { title: 'h1', h1: 'h2', h2: 'h2', h3: 'h3', h4: 'h3', h5: 'h3', h6: 'h3' }[block.s] || 'p';
+          var el = h(tag, { class: 'doc-p' + (block.s === 'subtitle' ? ' doc-subtitle' : '') });
+          if (block.a) el.style.textAlign = block.a;
+          if (block.t === 'li') {
+            var indent = 22 + (block.l || 0) * 20;
+            var glyph = h('span', { class: 'doc-glyph', 'aria-hidden': 'true', text: block.g });
+            glyph.style.left = indent - 22 + 'px';
+            el.classList.add('doc-li');
+            el.style.paddingLeft = indent + 'px';
+            el.appendChild(glyph);
+          }
+          renderRuns(runs, el);
+          return el;
+        }
+
+        function renderTable(block) {
+          var table = h('table', { class: 'doc-table' });
+          var widths = block.w || [];
+          var total = widths.reduce(function (sum, w) {
+            return sum + (w || 0);
+          }, 0);
+          if (total > 0 && widths.every(function (w) { return w > 0; })) {
+            var colgroup = h('colgroup');
+            widths.forEach(function (w) {
+              var col = h('col');
+              col.style.width = ((w / total) * 100).toFixed(2) + '%';
+              colgroup.appendChild(col);
+            });
+            table.appendChild(colgroup);
+          }
+          var tbody = h('tbody');
+          block.rows.forEach(function (row) {
+            var tr = h('tr');
+            row.forEach(function (cell) {
+              var td = h('td');
+              if (cell.cs) td.colSpan = cell.cs;
+              if (cell.rs) td.rowSpan = cell.rs;
+              if (isColor(cell.bg)) td.style.backgroundColor = cell.bg;
+              (cell.b || []).forEach(function (b) {
+                var el = renderBlock(b);
+                if (!el.classList.contains('doc-gap')) td.appendChild(el); // 칸 안의 빈 줄은 생략
+              });
+              tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+          });
+          table.appendChild(tbody);
+          return h('div', { class: 'doc-table-wrap' }, table);
+        }
+
+        /** 글자 조각: 일반 글자 / {{항목}} 빈칸 / 공통 자리표시자 값 */
+        function renderRuns(runs, parent) {
+          runs.forEach(function (run) {
+            var el;
+            if (run.f) {
+              el = makeBlank(run.f);
+            } else if (run.cm) {
+              el = h('span', { text: (BOOT.common || {})[run.cm] || '' });
+            } else {
+              var link = safeUrl(run.ln);
+              el = link ? h('a', { href: link, target: '_blank', rel: 'noopener', text: run.x }) : h('span', { text: run.x });
+            }
+            applyRunStyle(el, run, !!run.f);
+            parent.appendChild(el);
+          });
+        }
+
+        /** 문서의 글자 서식(굵게·기울임·밑줄·취소선·색·크기)을 옮긴다. 빈칸은 색을 바꾸지 않는다. */
+        function applyRunStyle(el, run, isBlank) {
+          if (run.b) el.style.fontWeight = '700';
+          if (run.i) el.style.fontStyle = 'italic';
+          var deco = [run.u && !isBlank ? 'underline' : '', run.s ? 'line-through' : ''].join(' ').trim();
+          if (deco) el.style.textDecoration = deco;
+          if (!isBlank && isColor(run.fg)) el.style.color = run.fg;
+          if (!isBlank && isColor(run.bg)) el.style.backgroundColor = run.bg;
+          if (run.fs) el.style.fontSize = Math.max(11, Math.min(30, Math.round(run.fs * 1.36))) + 'px'; // 11pt → 15px
+        }
+
+        function isColor(value) {
+          return /^#[0-9a-fA-F]{6}$/.test(String(value || ''));
+        }
+
+        /** 문서 속 빈칸. 누르면 해당 입력 칸으로 이동한다. */
+        function makeBlank(name) {
+          var el = h('span', { class: 'blank is-empty', role: 'button', tabindex: '0', 'aria-label': name + ' 입력 칸으로 이동', text: name });
+          var go = function () {
+            focusField(name);
+          };
+          el.addEventListener('click', go);
+          el.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              go();
+            }
+          });
+          (state.blanks[name] = state.blanks[name] || []).push(el);
+          return el;
+        }
+
+        function focusField(name) {
+          var control = state.controls[name];
+          if (!control || control.wrapper.hidden) return;
+          control.wrapper.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          control.focus();
+          control.wrapper.classList.remove('flash');
+          void control.wrapper.offsetWidth; // 애니메이션을 다시 시작
+          control.wrapper.classList.add('flash');
+        }
+
+        /** 문서 속 빈칸에 지금 입력한 값을 보여 준다. (숨겨진 항목은 빈칸도 숨김) */
+        function updateBlanks(visible) {
+          state.form.fields.forEach(function (field) {
+            var list = state.blanks[field.name];
+            if (!list) return;
+            var display = blankText(field, state.controls[field.name].value());
+            list.forEach(function (el) {
+              el.hidden = !visible[field.name];
+              el.textContent = display.text || field.name;
+              el.classList.toggle('is-empty', !display.filled);
+            });
+          });
+        }
+
+        /** 빈칸에 보일 글자 (결과 문서에 들어갈 모양과 같게) */
+        function blankText(field, value) {
+          if (field.type === 'agree') {
+            return {
+              text: field.options
+                .map(function (o) {
+                  return (o === value ? '☑ ' : '□ ') + o;
+                })
+                .join('   '),
+              filled: !!value,
+            };
+          }
+          if (field.type === 'multi') return { text: value.join(', '), filled: value.length > 0 };
+          if (field.type === 'sign') return { text: value ? '✓ 서명함' : '', filled: !!value };
+          return { text: value, filled: value !== '' };
+        }
+
+        /**
+         * 입력 항목 하나를 만든다.
+         * @return {{wrapper, value(), exportValue(), focus(), setError(msg), onShow?()}}
+         */
+        function createControl(field, index) {
+          var id = nextId();
+          var labelId = id + '-label';
+          var helpId = id + '-help';
+          var errorId = id + '-error';
+          var help = field.help || (field.type === 'sign' ? '손가락이나 마우스로 서명해 주세요.' : '');
+          var describedBy = (help ? helpId + ' ' : '') + errorId;
+          var wrapper = h('div', { class: 'field', 'data-index': index });
+          var isGroup = ['multi', 'agree', 'sign'].indexOf(field.type) >= 0;
+          var label = h(isGroup ? 'div' : 'label', { class: 'label', id: labelId, for: isGroup ? null : id }, [
+            field.name,
+            field.required ? h('span', { class: 'req', 'aria-hidden': 'true', text: '*' }) : null,
+            field.required ? h('span', { class: 'sr-only', text: '(필수)' }) : null,
+          ]);
+          wrapper.appendChild(label);
+          if (help) wrapper.appendChild(h('p', { class: 'help', id: helpId, text: help }));
+
+          var errorEl = h('p', { class: 'field-error', id: errorId, hidden: true });
+          var control = {
+            field: field,
+            wrapper: wrapper,
+            setError: function (message) {
+              errorEl.textContent = message || '';
+              errorEl.hidden = !message;
+              wrapper.classList.toggle('invalid', !!message);
+              control.inputs.forEach(function (el) {
+                if (message) el.setAttribute('aria-invalid', 'true');
+                else el.removeAttribute('aria-invalid');
+              });
+            },
+          };
+          var built = buildInput(field, id, labelId, describedBy);
+          control.inputs = built.inputs;
+          control.value = built.value;
+          control.exportValue = built.exportValue || built.value;
+          control.onShow = built.onShow;
+          control.focus = function () {
+            if (built.inputs[0]) built.inputs[0].focus({ preventScroll: true });
+          };
+          wrapper.appendChild(built.el);
+          wrapper.appendChild(errorEl);
+          return control;
+        }
+
+        /** 유형별 입력 요소 */
+        function buildInput(field, id, labelId, describedBy) {
+          var common = { id: id, 'aria-describedby': describedBy, autocomplete: 'off' };
+          if (field.required) common['aria-required'] = 'true';
+          var input;
+          switch (field.type) {
+            case 'agree':
+              return choiceInput(field, id, labelId, describedBy, false);
+            case 'multi':
+              return choiceInput(field, id, labelId, describedBy, true);
+            case 'select':
+              input = h('select', common, [h('option', { value: '', text: '선택하세요' })].concat(field.options.map(function (o) {
+                return h('option', { value: o, text: o });
+              })));
+              return single(input);
+            case 'sign':
+              return signatureInput(field, labelId, describedBy);
+          }
+          // text: 한 줄로 시작해 입력한 만큼 늘어나는 칸
+          input = h('textarea', Object.assign({ rows: 1, maxlength: LIMITS.text }, common));
+          input.addEventListener('input', function () {
+            input.style.height = 'auto';
+            input.style.height = input.scrollHeight + 2 + 'px';
+          });
+          return single(input);
+        }
+
+        function single(input) {
+          return {
+            el: input,
+            inputs: [input],
+            value: function () {
+              return input.value.trim();
+            },
+          };
+        }
+
+        /** agree(하나 고르기) / multi(여러 개 고르기). 필수가 아닌 하나 고르기는 다시 누르면 해제된다. */
+        function choiceInput(field, id, labelId, describedBy, multi) {
+          var group = h('div', { class: multi ? 'choices multi' : 'choices', role: multi ? 'group' : 'radiogroup', 'aria-labelledby': labelId, 'aria-describedby': describedBy });
+          var current = '';
+          var inputs = field.options.map(function (option, i) {
+            var input = h('input', { type: multi ? 'checkbox' : 'radio', name: id, value: option, id: id + '-' + i });
+            if (!multi && !field.required) {
+              input.addEventListener('click', function () {
+                if (current === option) {
+                  input.checked = false;
+                  current = '';
+                  onFieldChange({ target: input });
+                } else {
+                  current = option;
+                }
+              });
+            }
+            group.appendChild(h('label', { class: 'choice' }, [input, h('span', { text: option })]));
+            return input;
+          });
+          return {
+            el: group,
+            inputs: inputs,
+            value: function () {
+              var checked = inputs.filter(function (i) {
+                return i.checked;
+              }).map(function (i) {
+                return i.value;
+              });
+              return multi ? checked : checked[0] || '';
+            },
+          };
+        }
+
+        /** 서명 */
+        function signatureInput(field, labelId, describedBy) {
+          var pad = createSignaturePad(field.name, function () {
+            onFieldChange({ target: pad.canvas });
+          });
+          var clearBtn = h('button', { type: 'button', class: 'btn-small', text: '지우기' });
+          clearBtn.addEventListener('click', pad.clear);
+          var el = h('div', { role: 'group', 'aria-labelledby': labelId, 'aria-describedby': describedBy }, [pad.el, h('div', { class: 'sig-actions' }, clearBtn)]);
+          return {
+            el: el,
+            inputs: [clearBtn],
+            value: function () {
+              return pad.hasInk() ? '서명함' : '';
+            },
+            exportValue: function () {
+              return pad.toDataURL();
+            },
+            onShow: pad.resize,
+          };
+        }
+
+        /**
+         * 서명 패드: 포인터 이벤트(손가락·펜·마우스), 고해상도 화면 대응.
+         * 획을 좌표로 기억해 두어 화면 회전 등으로 크기가 바뀌면 다시 그린다. (칸보다 크면 줄여서)
+         * 내보낼 때는 여백을 잘라 투명 PNG로 만든다.
+         */
+        function createSignaturePad(name, onChange) {
+          var canvas = h('canvas', { class: 'sig-canvas', role: 'img', 'aria-label': name + ' 서명 칸' });
+          var box = h('div', { class: 'sig-box' }, [canvas, h('span', { class: 'sig-placeholder', 'aria-hidden': 'true', text: '여기에 서명해 주세요' })]);
+          var ctx = canvas.getContext('2d');
+          var ratio = 1;
+          var cssW = 0;
+          var cssH = 0;
+          var strokes = []; // [[{x, y}, …], …] (CSS 픽셀)
+          var current = null;
+
+          function applyStyle() {
+            ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+            ctx.lineWidth = 2.6;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.strokeStyle = '#111';
+            ctx.fillStyle = '#111';
+          }
+
+          function dot(p) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, ctx.lineWidth / 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          function segment(a, b) {
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+          }
+
+          function redraw() {
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.restore();
+            strokes.forEach(function (s) {
+              dot(s[0]);
+              for (var i = 1; i < s.length; i++) segment(s[i - 1], s[i]);
+            });
+          }
+
+          function resize() {
+            var rect = canvas.getBoundingClientRect();
+            if (rect.width < 2 || rect.height < 2) return; // 숨겨진 상태
+            if (Math.abs(rect.width - cssW) < 0.5 && Math.abs(rect.height - cssH) < 0.5) return;
+            cssW = rect.width;
+            cssH = rect.height;
+            ratio = Math.min(Math.max(window.devicePixelRatio || 1, 1), 3);
+            canvas.width = Math.round(cssW * ratio);
+            canvas.height = Math.round(cssH * ratio);
+            applyStyle();
+            if (!strokes.length) return;
+            // 서명이 새 칸보다 크면 비율을 유지하며 줄인다.
+            var maxX = 0;
+            var maxY = 0;
+            strokes.forEach(function (s) {
+              s.forEach(function (p) {
+                maxX = Math.max(maxX, p.x);
+                maxY = Math.max(maxY, p.y);
+              });
+            });
+            var scale = Math.min(1, (cssW - 4) / maxX, (cssH - 4) / maxY);
+            if (scale < 1) {
+              strokes.forEach(function (s) {
+                s.forEach(function (p) {
+                  p.x *= scale;
+                  p.y *= scale;
+                });
+              });
+            }
+            redraw();
+          }
+
+          function pointOf(e) {
+            var rect = canvas.getBoundingClientRect();
+            return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+          }
+
+          canvas.addEventListener('pointerdown', function (e) {
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
+            e.preventDefault();
+            resize();
+            try {
+              canvas.setPointerCapture(e.pointerId);
+            } catch (err) {
+              /* 지원하지 않는 브라우저 */
+            }
+            var p = pointOf(e);
+            current = [p];
+            strokes.push(current);
+            dot(p);
+            if (strokes.length === 1) {
+              box.classList.add('has-ink');
+              onChange();
+            }
+          });
+          canvas.addEventListener('pointermove', function (e) {
+            if (!current) return;
+            e.preventDefault();
+            var events = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+            (events.length ? events : [e]).forEach(function (ev) {
+              var p = pointOf(ev);
+              segment(current[current.length - 1], p);
+              current.push(p);
+            });
+          });
+          ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (type) {
+            canvas.addEventListener(type, function () {
+              current = null;
+            });
+          });
+
+          if (window.ResizeObserver) new ResizeObserver(resize).observe(canvas);
+          else window.addEventListener('resize', resize);
+
+          function hasInk() {
+            return strokes.length > 0;
+          }
+
+          return {
+            el: box,
+            canvas: canvas,
+            resize: resize,
+            hasInk: hasInk,
+            clear: function () {
+              var had = hasInk();
+              strokes = [];
+              current = null;
+              redraw();
+              if (had) {
+                box.classList.remove('has-ink');
+                onChange();
+              }
+            },
+            toDataURL: function () {
+              if (!hasInk()) return '';
+              var w = canvas.width;
+              var ht = canvas.height;
+              var data = ctx.getImageData(0, 0, w, ht).data;
+              var minX = w;
+              var minY = ht;
+              var maxX = -1;
+              var maxY = -1;
+              for (var y = 0; y < ht; y++) {
+                for (var x = 0; x < w; x++) {
+                  if (data[(y * w + x) * 4 + 3] > 0) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                  }
+                }
+              }
+              if (maxX < 0) return '';
+              var margin = Math.round(8 * ratio);
+              minX = Math.max(0, minX - margin);
+              minY = Math.max(0, minY - margin);
+              maxX = Math.min(w - 1, maxX + margin);
+              maxY = Math.min(ht - 1, maxY + margin);
+              var cw = maxX - minX + 1;
+              var ch = maxY - minY + 1;
+              var scale = Math.min(1, 900 / cw, 400 / ch);
+              var out = document.createElement('canvas');
+              out.width = Math.max(1, Math.round(cw * scale));
+              out.height = Math.max(1, Math.round(ch * scale));
+              out.getContext('2d').drawImage(canvas, minX, minY, cw, ch, 0, 0, out.width, out.height);
+              return out.toDataURL('image/png');
+            },
+          };
+        }
+
+        /* ---------- 표시조건 ---------- */
+
+        /** 서버(validateAnswers_)와 같은 규칙으로 항목별 표시 여부를 계산한다. */
+        function computeVisibility() {
+          var visible = {};
+          state.form.fields.forEach(function (field) {
+            var c = field.condition;
+            var shown = true;
+            if (c) {
+              if (!visible[c.field]) {
+                shown = false; // 조건에 쓴 항목이 숨겨져 있으면 이 항목도 숨긴다.
+              } else {
+                var v = state.controls[c.field].value();
+                var selected = Array.isArray(v) ? v : v ? [v] : [];
+                shown = c.values.some(function (x) {
+                  return selected.indexOf(x) >= 0;
+                });
+              }
+            }
+            visible[field.name] = shown;
+          });
+          return visible;
+        }
+
+        function applyVisibility() {
+          var visible = computeVisibility();
+          state.form.fields.forEach(function (field) {
+            var control = state.controls[field.name];
+            var show = !!visible[field.name];
+            if (control.wrapper.hidden !== !show) control.wrapper.hidden = !show;
+            if (show && control.onShow) control.onShow();
+            if (!show) control.setError('');
+          });
+          updateBlanks(visible);
+          return visible;
+        }
+
+        /* ---------- 검증 (서버 normalizeAnswer_와 같은 규칙) ---------- */
+
+        function validateField(field, value) {
+          var empty = Array.isArray(value) ? value.length === 0 : value === '';
+          if (empty) return field.required ? requiredMessage(field) : '';
+          switch (field.type) {
+            case 'select':
+            case 'agree':
+              return field.options.indexOf(value) >= 0 ? '' : MSG.notOption;
+            case 'multi':
+              return value.every(function (v) {
+                return field.options.indexOf(v) >= 0;
+              }) ? '' : MSG.notOption;
+            case 'sign':
+              return '';
+          }
+          return value.length > LIMITS.text ? LIMITS.text + '자 이내로 입력해 주세요. (지금 ' + value.length + '자)' : '';
+        }
+
+        function requiredMessage(field) {
+          if (field.type === 'select' || field.type === 'agree') return '하나를 골라 주세요.';
+          if (field.type === 'multi') return '하나 이상 골라 주세요.';
+          if (field.type === 'sign') return '서명해 주세요.';
+          return '필수 항목입니다. 입력해 주세요.';
+        }
+
+        /** 보이는 항목의 값을 모으고 검증한다. */
+        function collect(forSubmit) {
+          var visible = computeVisibility();
+          var answers = {};
+          var errors = [];
+          state.form.fields.forEach(function (field) {
+            var control = state.controls[field.name];
+            if (!control || !visible[field.name]) return;
+            var message = validateField(field, control.value());
+            control.setError(message);
+            if (message) errors.push(field.name);
+            else if (forSubmit) answers[field.name] = control.exportValue();
+          });
+          return { answers: answers, errors: errors };
+        }
+
+        function onFieldChange(e) {
+          if (!state || state.submitting) return;
+          applyVisibility();
+          if (!state.attempted) return;
+          // 한 번 제출을 시도한 뒤에는 고치는 즉시 오류 표시를 갱신한다.
+          var wrapper = e && e.target && e.target.closest ? e.target.closest('.field') : null;
+          var field = wrapper ? state.form.fields[Number(wrapper.getAttribute('data-index'))] : null;
+          var control = field ? state.controls[field.name] : null;
+          if (control && !wrapper.hidden) control.setError(validateField(field, control.value()));
+          var remaining = Object.keys(state.controls).filter(function (name) {
+            return state.controls[name].wrapper.classList.contains('invalid');
+          }).length;
+          showSummary(remaining);
+        }
+
+        function showSummary(count) {
+          state.summary.hidden = !count;
+          state.summary.textContent = count ? '입력하지 않았거나 잘못된 항목이 ' + count + '개 있습니다. 빨간 글씨를 확인해 주세요.' : '';
+        }
+
+        function focusFirstError() {
+          var first = state.form.fields.filter(function (f) {
+            var c = state.controls[f.name];
+            return c && c.wrapper.classList.contains('invalid') && !c.wrapper.hidden;
+          })[0];
+          if (!first) return;
+          var control = state.controls[first.name];
+          control.wrapper.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          control.focus();
+        }
+
+        /* ---------- 제출 ---------- */
+
+        function onSubmit(e) {
+          e.preventDefault();
+          if (state.submitting) return;
+          state.attempted = true;
+          var result = collect(false);
+          if (result.errors.length) {
+            showSummary(result.errors.length);
+            focusFirstError();
+            return;
+          }
+          showSummary(0);
+          if (!window.google || !google.script || !google.script.run) {
+            showDialog({ title: '제출할 수 없습니다', message: '이 화면은 웹앱 주소에서 열어야 제출할 수 있습니다.' });
+            return;
+          }
+          var answers = collect(true).answers;
+          setSubmitting(true);
+          google.script.run.withSuccessHandler(onSubmitResult).withFailureHandler(onSubmitFailure).submitForm(state.form.id, answers);
+        }
+
+        function setSubmitting(on) {
+          state.submitting = on;
+          state.submitBtn.disabled = on;
+          state.submitBtn.textContent = on ? '제출하는 중…' : '제출하기';
+          if (on) showBusy('제출하고 있습니다. 창을 닫지 말고 잠시 기다려 주세요.');
+          else overlay.hidden = true;
+        }
+
+        function onSubmitResult(res) {
+          setSubmitting(false);
+          if (res && res.ok) {
+            renderDone(res);
+            return;
+          }
+          if (res && res.errors && res.errors.length) {
+            // 서버 검증 오류를 항목 아래에 보여 준다.
+            var unknown = [];
+            res.errors.forEach(function (err) {
+              var control = state.controls[err.field];
+              if (control) control.setError(err.message);
+              else unknown.push(err.field + ': ' + err.message);
+            });
+            showSummary(res.errors.length - unknown.length);
+            if (unknown.length) {
+              showDialog({ title: '신청서가 바뀌었습니다', message: '관리자가 신청서를 고쳤습니다. 페이지를 새로고침한 뒤 다시 작성해 주세요.', detail: unknown.join('\n') });
+            } else {
+              focusFirstError();
+            }
+            return;
+          }
+          showDialog({
+            title: '제출하지 못했습니다',
+            message: (res && res.message) || '알 수 없는 문제가 생겼습니다. 잠시 후 다시 시도해 주세요.',
+            problems: res && res.problems,
+            detail: res && res.detail,
+          });
+        }
+
+        function onSubmitFailure(err) {
+          setSubmitting(false);
+          showDialog({
+            title: '제출하지 못했습니다',
+            message: '인터넷 연결을 확인한 뒤 다시 시도해 주세요. 입력한 내용은 그대로 남아 있습니다.',
+            detail: err && err.message ? err.message : String(err || ''),
+          });
+        }
+
+        function showDialog(opts) {
+          clear(dialog);
+          var closeBtn = h('button', { type: 'button', class: 'btn-primary', text: '닫기' });
+          closeBtn.addEventListener('click', function () {
+            overlay.hidden = true;
+          });
+          append(dialog, [
+            h('h2', { text: opts.title }),
+            h('p', { text: opts.message }),
+            opts.problems && opts.problems.length ? h('div', { class: 'admin-box' }, [h('h2', { text: '관리자 확인 사항' }), problemList(opts.problems, 'danger')]) : null,
+            opts.detail ? h('p', { class: 'detail', text: opts.detail }) : null,
+            h('div', { class: 'buttons' }, closeBtn),
+          ]);
+          overlay.hidden = false;
+          closeBtn.focus();
+        }
+
+        document.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape' && !overlay.hidden && !(state && state.submitting)) overlay.hidden = true;
+        });
+
+        /** 제출 완료 화면 */
+        function renderDone(res) {
+          clear(app);
+          window.scrollTo(0, 0);
+          var docUrl = safeUrl(res.url);
+          var buttons = [h('button', { type: 'button', class: 'btn-primary', text: '새로 작성하기', onclick: renderForm })];
+          if (docUrl) buttons.unshift(h('a', { class: 'btn-secondary', href: docUrl, target: '_blank', rel: 'noopener', text: '저장된 문서 열기' }));
+          buttons.push(navLink({}, { class: 'btn-secondary', text: '신청서 목록' }));
+          app.appendChild(
+            h('section', { class: 'card center-card' }, [
+              h('div', { class: 'icon ok', 'aria-hidden': 'true', text: '✓' }),
+              h('h1', { text: '제출되었습니다' }),
+              h('p', { text: state.form.name + ' 내용이 문서로 저장되었습니다.' }),
+              res.name ? h('p', { class: 'file-name', text: res.name }) : null,
+              h('div', { class: 'buttons' }, buttons),
+            ]),
+          );
+        }
+      })();
+    </script>
