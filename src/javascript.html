@@ -9,9 +9,11 @@
         var BOOT = readBoot();
         var LIMITS = {}; // 글자 수 제한. 신청서 화면을 그릴 때 서버 값(BOOT.limits)으로 채운다.
 
-        /* 서버(Code.gs MESSAGES_)와 같은 문구 */
+        /* 서버(Code.gs MESSAGES_)와 같은 문구. 필수·글자 수 문구는 requiredMessage·validateField에 서버와 같게 적는다. */
         var MSG = {
           notOption: '선택지에 없는 값입니다. 다시 골라 주세요.',
+          tooFew: '{n}개 이상 골라 주세요.',
+          tooMany: '{n}개까지 고를 수 있습니다.',
         };
 
         var state = null; // 신청서 화면 상태
@@ -483,14 +485,14 @@
               filled: !!value,
             };
           }
-          if (field.type === 'multi') return { text: value.join(', '), filled: value.length > 0 };
+          if (field.multiple) return { text: value.join(', '), filled: value.length > 0 };
           if (field.type === 'sign') return { text: value ? '✓ 서명함' : '', filled: !!value };
           return { text: value, filled: value !== '' };
         }
 
         /**
          * 입력 항목 하나를 만든다.
-         * @return {{wrapper, value(), exportValue(), focus(), setError(msg), onShow?()}}
+         * @return {{wrapper, inputs, value(), exportValue(), focus(), setError(msg), onShow?()}}
          */
         function createControl(field, index) {
           var id = nextId();
@@ -500,7 +502,7 @@
           var help = field.help || (field.type === 'sign' ? '손가락이나 마우스로 서명해 주세요.' : '');
           var describedBy = (help ? helpId + ' ' : '') + errorId;
           var wrapper = h('div', { class: 'field', 'data-index': index });
-          var isGroup = ['multi', 'agree', 'sign'].indexOf(field.type) >= 0;
+          var isGroup = field.multiple || ['button', 'agree', 'sign'].indexOf(field.type) >= 0;
           var label = h(isGroup ? 'div' : 'label', { class: 'label', id: labelId, for: isGroup ? null : id }, [
             field.name,
             field.required ? h('span', { class: 'req', 'aria-hidden': 'true', text: '*' }) : null,
@@ -511,7 +513,6 @@
 
           var errorEl = h('p', { class: 'field-error', id: errorId, hidden: true });
           var control = {
-            field: field,
             wrapper: wrapper,
             setError: function (message) {
               errorEl.textContent = message || '';
@@ -543,10 +544,11 @@
           var input;
           switch (field.type) {
             case 'agree':
-              return choiceInput(field, id, labelId, describedBy, false);
-            case 'multi':
-              return choiceInput(field, id, labelId, describedBy, true);
-            case 'select':
+            case 'button':
+              return choiceInput(field, id, labelId, describedBy, 'choices');
+            case 'list':
+              // 여러 개 고르기는 체크 목록, 하나 고르기는 펼침 목록
+              if (field.multiple) return choiceInput(field, id, labelId, describedBy, 'choices checklist');
               input = h('select', common, [h('option', { value: '', text: '선택하세요' })].concat(field.options.map(function (o) {
                 return h('option', { value: o, text: o });
               })));
@@ -573,12 +575,26 @@
           };
         }
 
-        /** agree(하나 고르기) / multi(여러 개 고르기). 필수가 아닌 하나 고르기는 다시 누르면 해제된다. */
-        function choiceInput(field, id, labelId, describedBy, multi) {
-          var group = h('div', { class: multi ? 'choices multi' : 'choices', role: multi ? 'group' : 'radiogroup', 'aria-labelledby': labelId, 'aria-describedby': describedBy });
+        /**
+         * 버튼·체크 목록으로 고르기 (button, agree, 여러 개 고르는 list).
+         * 필수가 아닌 하나 고르기는 다시 누르면 해제된다. 여러 개 고르기는 max개를 고르면 나머지를 누를 수 없게 한다.
+         */
+        function choiceInput(field, id, labelId, describedBy, className) {
+          var multi = !!field.multiple;
+          var group = h('div', { class: className + (multi ? ' multi' : ''), role: multi ? 'group' : 'radiogroup', 'aria-labelledby': labelId, 'aria-describedby': describedBy });
           var current = '';
           var inputs = field.options.map(function (option, i) {
             var input = h('input', { type: multi ? 'checkbox' : 'radio', name: id, value: option, id: id + '-' + i });
+            if (multi && field.max < field.options.length) {
+              input.addEventListener('change', function () {
+                var full = inputs.filter(function (el) {
+                  return el.checked;
+                }).length >= field.max;
+                inputs.forEach(function (el) {
+                  el.disabled = full && !el.checked;
+                });
+              });
+            }
             if (!multi && !field.required) {
               input.addEventListener('click', function () {
                 if (current === option) {
@@ -812,22 +828,33 @@
         function computeVisibility() {
           var visible = {};
           state.form.fields.forEach(function (field) {
-            var c = field.condition;
-            var shown = true;
-            if (c) {
-              if (!visible[c.field]) {
-                shown = false; // 조건에 쓴 항목이 숨겨져 있으면 이 항목도 숨긴다.
-              } else {
-                var v = state.controls[c.field].value();
-                var selected = Array.isArray(v) ? v : v ? [v] : [];
-                shown = c.values.some(function (x) {
-                  return selected.indexOf(x) >= 0;
-                });
-              }
-            }
-            visible[field.name] = shown;
+            visible[field.name] = !field.condition || conditionTrue(field.condition, visible);
           });
           return visible;
+        }
+
+        /**
+         * 조건 하나를 계산한다. (서버 conditionTrue_와 같은 규칙)
+         *   {field, values}: 그 항목에서 값 중 하나라도 골랐으면 참 (조건에 쓴 항목이 숨겨져 있으면 거짓)
+         *   {op: 'and'|'or', items}: 모두 / 하나라도 참
+         */
+        function conditionTrue(node, visible) {
+          if (node.op === 'and') {
+            return node.items.every(function (n) {
+              return conditionTrue(n, visible);
+            });
+          }
+          if (node.op === 'or') {
+            return node.items.some(function (n) {
+              return conditionTrue(n, visible);
+            });
+          }
+          if (!visible[node.field]) return false;
+          var v = state.controls[node.field].value();
+          var selected = Array.isArray(v) ? v : v ? [v] : [];
+          return node.values.some(function (x) {
+            return selected.indexOf(x) >= 0;
+          });
         }
 
         function applyVisibility() {
@@ -840,7 +867,6 @@
             if (!show) control.setError('');
           });
           updateBlanks(visible);
-          return visible;
         }
 
         /* ---------- 검증 (서버 normalizeAnswer_와 같은 규칙) ---------- */
@@ -848,14 +874,19 @@
         function validateField(field, value) {
           var empty = Array.isArray(value) ? value.length === 0 : value === '';
           if (empty) return field.required ? requiredMessage(field) : '';
+          if (field.multiple) {
+            if (!value.every(function (v) {
+              return field.options.indexOf(v) >= 0;
+            })) return MSG.notOption;
+            if (value.length < field.min) return countMessage(MSG.tooFew, field.min);
+            if (value.length > field.max) return countMessage(MSG.tooMany, field.max);
+            return '';
+          }
           switch (field.type) {
-            case 'select':
+            case 'list':
+            case 'button':
             case 'agree':
               return field.options.indexOf(value) >= 0 ? '' : MSG.notOption;
-            case 'multi':
-              return value.every(function (v) {
-                return field.options.indexOf(v) >= 0;
-              }) ? '' : MSG.notOption;
             case 'sign':
               return '';
           }
@@ -863,10 +894,15 @@
         }
 
         function requiredMessage(field) {
-          if (field.type === 'select' || field.type === 'agree') return '하나를 골라 주세요.';
-          if (field.type === 'multi') return '하나 이상 골라 주세요.';
+          if (field.multiple) return field.min >= 2 ? countMessage(MSG.tooFew, field.min) : '하나 이상 골라 주세요.';
+          if (field.type === 'list' || field.type === 'button' || field.type === 'agree') return '하나를 골라 주세요.';
           if (field.type === 'sign') return '서명해 주세요.';
           return '필수 항목입니다. 입력해 주세요.';
+        }
+
+        /** '{n}개 이상 골라 주세요.' 같은 문구에 개수를 넣는다. */
+        function countMessage(message, n) {
+          return message.replace('{n}', n);
         }
 
         /** 보이는 항목의 값을 모으고 검증한다. */
@@ -929,7 +965,7 @@
             return;
           }
           showSummary(0);
-          if (!window.google || !google.script || !google.script.run) {
+          if (!canRun()) {
             showDialog({ title: '제출할 수 없습니다', message: '이 화면은 웹앱 주소에서 열어야 제출할 수 있습니다.' });
             return;
           }

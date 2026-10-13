@@ -75,7 +75,9 @@ const DEFAULT_FOLDER_ID = '1XyZ...';
 | `FORM_LIST_SHEET_NAME` | `'양식목록'` | 신청서 목록 탭 이름 |
 | `GUIDE_SHEET_NAME` | `'사용법'` | 관리자용 사용법 탭 이름 (`setup` 때 새로 작성) |
 | `CACHE_SECONDS` | `300` | 템플릿 시트·양식 문서 캐시 시간(초). `0`이면 캐시하지 않음, 최대 `21600` |
-| `DEFAULT_FOLDER_ID` | `''` | 기본 저장 폴더. 비우면 배포 계정의 내 드라이브 맨 위에 저장 |
+| `DEFAULT_FOLDER_ID` | `''` | 기본 저장 폴더. 비우면 배포 계정의 내 드라이브 맨 위 `DEFAULT_FOLDER_NAME` 폴더에 저장 |
+| `DEFAULT_FOLDER_NAME` | `'제출 문서'` | `DEFAULT_FOLDER_ID`가 비었을 때 내 드라이브 맨 위에 만들 폴더 이름 |
+| `DEFAULT_SUBFOLDER` | `'{{form_name}}/{{year}}'` | `양식목록`의 `하위폴더`가 비었을 때 쓰는 폴더 규칙 |
 | `DEFAULT_FILE_NAME` | `'{{form_name}}_{{submitted_at}}'` | `양식목록`의 `파일이름`이 비었을 때 쓰는 이름 규칙 |
 | `APP_TITLE` | `'신청서'` | 신청서 목록 화면 제목 |
 | `SHOW_DOC_LINK` | `true` | 제출 완료 화면에 저장된 문서 링크를 보여 줄지 여부 |

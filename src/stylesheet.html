@@ -248,6 +248,25 @@
       .field.invalid .choice span {
         border-color: #e8a4a1;
       }
+      /* max개를 다 고르면 나머지 선택지는 누를 수 없다 */
+      .choice input:disabled + span {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      /* 체크 목록 (여러 개 고르는 list): 한 줄에 하나씩, 왼쪽 정렬 */
+      .choices.checklist {
+        flex-direction: column;
+        gap: 6px;
+      }
+      .choices.checklist .choice {
+        flex: none;
+      }
+      .choices.checklist .choice span {
+        justify-content: flex-start;
+        min-height: 42px;
+        text-align: left;
+      }
 
       /* 서명 */
       .sig-box {

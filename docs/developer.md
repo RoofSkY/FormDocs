@@ -62,7 +62,8 @@ submitForm(formId, answers)
 ├─ validateAnswers_()       표시조건 → 정규화 → 필수 검사
 ├─ buildValues_()           자리표시자 이름 → {text, plain, image}
 └─ createDocument_()
-   ├─ resolveFolder_()      저장폴더ID → DEFAULT_FOLDER_ID → 루트, 하위폴더는 LockService로 생성
+   ├─ resolveFolder_()      저장폴더ID → DEFAULT_FOLDER_ID → 루트/DEFAULT_FOLDER_NAME,
+   │                        하위폴더(비면 DEFAULT_SUBFOLDER)는 LockService로 생성
    ├─ makeCopy()            양식 문서 사본
    ├─ fillTemplate_()       모든 탭의 본문·머리글·바닥글 치환 → 남은 {{…}} 제거
    └─ (실패 시 사본을 휴지통으로)
@@ -100,24 +101,25 @@ submitForm(formId, answers)
 
 ### 자리표시자 해석
 
-- `parsePlaceholder_(raw)`가 `{{항목명[*][: 설정, …]}}`을 `{name, required, type, options, condition, help, hasSettings, common?, error?}`로 바꿉니다.
-- 설정은 `splitSettings_()`가 괄호 밖 쉼표로 나눕니다. `help`로 시작하는 조각부터 끝까지는 하나로 봅니다.
-- 지시자(유형·`required`·`if`·`or`·`help`)와 공통 자리표시자는 영어 소문자만 인식합니다. 대문자는 "소문자로 적으세요" 오류, 한글 지시자는 "알 수 없는 설정" 오류가 됩니다. 한글은 항목명에만 쓰므로 둘이 섞이지 않습니다.
-- 표시조건은 `if`로 시작하는 조각만 인정합니다. `if` 없는 `항목=값`은 오류입니다.
-- `buildFields_()`는 처음 나온 순서로 항목을 만들고, 같은 이름의 설정이 서로 다르면 오류를 냅니다.
-- `parseCondition_()`의 조건 항목은 이미 앞에서 정의된 고르는 유형이어야 합니다. 그래서 조건은 항상 앞 → 뒤 방향이고, 순환이 생기지 않습니다.
-- 문법 전체는 [자리표시자 문법](placeholder-syntax.md)에 있습니다.
+- `parsePlaceholder_(raw)`가 `{{항목명[*][: 설정, …]}}`을 `{name, required, type, options, min, max, condition, help, hasSettings, common?, error?}`로 바꿉니다. `condition`은 `if` 괄호 안 원문입니다.
+- 설정은 `splitTop_()`가 따옴표·괄호 밖의 쉼표로 나누고, `applySetting_()`이 `낱말(인자)` 하나씩 해석합니다. 따옴표(`"` `“` `”` `＂`) 안은 `scanOutsideQuotes_()`가 건너뛰며, `""`는 글자 `"`입니다. 인자는 `splitArgs_()`·`unquote_()`로 나눕니다.
+- 지시자(유형·`max`·`min`·`help`·`if`·`and`·`or`)와 공통 자리표시자는 영어 소문자만 인식합니다. 대문자는 "소문자로 적으세요" 오류, 한글 지시자는 "알 수 없는 설정" 오류가 됩니다. 지시자와 같은 항목명도 오류입니다.
+- `buildFields_()`는 처음 나온 순서로 항목을 만들고, 같은 이름의 설정이 서로 다르면 오류를 냅니다. `max`·`min`이 2 이상이면 `multiple: true`이고, `max`가 없으면 선택지 수를 씁니다.
+- `parseCondition_()`은 `conditionTokens_()`로 나눈 낱말을 읽어 조건 트리를 만듭니다: `{field, values}` 또는 `{op: 'and'|'or', items}`. 한 묶음 안에서 `and`와 `or`를 섞으면 오류입니다(괄호로 묶어야 함).
+- `conditionProblem_()`이 확인하는 조건 항목은 이미 앞에서 정의된 고르는 유형(`list`·`button`·`agree`)이어야 합니다. 그래서 조건은 항상 앞 → 뒤 방향이고, 순환이 생기지 않습니다.
+- 조건 계산은 서버 `conditionTrue_()`와 클라이언트 `conditionTrue()`가 같은 규칙입니다. 숨겨진 항목은 값이 없는 것으로 봅니다.
+- 문법 규칙은 [자리표시자 문법](placeholder-syntax.md), 쓰는 예는 [자리표시자 예시](placeholder-examples.md)에 있습니다.
 
 ### 입력 칸 유형 추가하기
 
-관리자가 고를 유형은 일부러 5종(`text`, `select`, `multi`, `agree`, `sign`)으로 줄였습니다. 날짜·전화번호처럼 형식이 있는 값은 유형을 늘리지 말고 `text` + `help` 문구로 받습니다. 그래도 유형이 꼭 필요할 때만 아래 순서로 추가합니다.
+관리자가 고를 유형은 일부러 5종(`text`, `list`, `button`, `agree`, `sign`)으로 줄였습니다. 여러 개 고르기는 유형이 아니라 `list`·`button`의 `max`·`min` 설정입니다. 날짜·전화번호처럼 형식이 있는 값은 유형을 늘리지 말고 `text` + `help` 문구로 받습니다. 그래도 유형이 꼭 필요할 때만 아래 순서로 추가합니다.
 
 1. `Form.gs`의 `FIELD_TYPES_`에 유형을 추가합니다. 유형 이름은 영어 소문자로 짓습니다. `example`, `screen`, `output`은 `사용법` 탭과 오류 안내에 쓰입니다.
 2. `normalizeAnswer_()`에 서버 검증·정규화를 추가합니다. 필요하면 `buildValues_()`에 결과 문서용 글자를 추가합니다.
 3. `javascript.html`의 입력 칸 생성(`switch (field.type)`), 클라이언트 검증, 문서 속 빈칸 표시(`blankText`)를 추가합니다.
 4. 오류 문구를 추가했다면 `Code.gs`의 `MESSAGES_`와 `javascript.html`의 같은 문구를 함께 고칩니다.
 5. 유형 이름을 바꾸거나 지웠다면 `cacheKey_()`의 `v` 번호를 올려 예전 캐시를 버립니다.
-6. `setup`을 다시 실행해 `사용법` 탭을 갱신하고, [자리표시자 문법](placeholder-syntax.md)도 고칩니다.
+6. `setup`을 다시 실행해 `사용법` 탭을 갱신하고, [자리표시자 문법](placeholder-syntax.md)과 [자리표시자 예시](placeholder-examples.md)도 고칩니다.
 
 ## 문서 생성 세부
 
@@ -132,8 +134,8 @@ submitForm(formId, answers)
 
 | 키 | 내용 | 무효화 |
 | --- | --- | --- |
-| `formdocs:v3:<시트ID>:list` | `양식목록` 해석 결과 | `CACHE_SECONDS` 만료, `?check=1` |
-| `formdocs:v3:<시트ID>:form:<양식ID>` | 양식 정의 + 문서 수정 시각 + 목록 줄 | 문서 `getLastUpdated()` 또는 목록 줄이 바뀌면 다시 읽음, `?check=1` |
+| `formdocs:v4:<시트ID>:list` | `양식목록` 해석 결과 | `CACHE_SECONDS` 만료, `?check=1` |
+| `formdocs:v4:<시트ID>:form:<양식ID>` | 양식 정의 + 문서 수정 시각 + 목록 줄 | 문서 `getLastUpdated()` 또는 목록 줄이 바뀌면 다시 읽음, `?check=1` |
 
 - `CacheService` 한 칸은 100KB 제한이 있습니다. 그래서 25,000자씩 나눠 `putAll`/`getAll`로 저장합니다. 40조각을 넘으면 캐시하지 않습니다.
 - 문제가 있는 결과는 캐시하지 않습니다. 관리자가 고치면 바로 다시 읽습니다.

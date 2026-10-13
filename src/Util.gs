@@ -22,7 +22,7 @@ const CACHE_CHUNK_SIZE_ = 25000;
 
 function cacheKey_(suffix) {
   // 캐시에 담는 양식 정의의 형식(유형 이름 등)이 바뀌면 v 번호를 올려 예전 캐시를 읽지 않게 한다.
-  return 'formdocs:v3:' + configId_(TEMPLATE_SPREADSHEET_ID) + ':' + suffix;
+  return 'formdocs:v4:' + configId_(TEMPLATE_SPREADSHEET_ID) + ':' + suffix;
 }
 
 function cacheGet_(suffix) {
@@ -246,7 +246,7 @@ function q_(word, pair) {
   return "'" + word + "'" + josa_(word, pair);
 }
 
-/** 받침 유무에 맞는 조사. pair: '은/는', '이/가', '을/를', '과/와', '으로/로' */
+/** 받침 유무에 맞는 조사. pair: '은/는', '이/가', '을/를', '과/와', '으로/로', '이라는/라는' */
 function josa_(word, pair) {
   const forms = pair.split('/');
   const text = String(word);

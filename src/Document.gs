@@ -47,15 +47,16 @@ function buildValues_(form, result, ctx) {
       return;
     }
     const value = result.values[field.name];
+    if (field.multiple) {
+      put(field.name, value.join(', '));
+      return;
+    }
     switch (field.type) {
       case 'sign':
         put(field.name, '', value ? '서명함' : '', value);
         break;
       case 'agree':
         put(field.name, checkLine_(field.options, value), value);
-        break;
-      case 'multi':
-        put(field.name, value.join(', '));
         break;
       default:
         put(field.name, value);
@@ -64,7 +65,7 @@ function buildValues_(form, result, ctx) {
   return values;
 }
 
-/** '☑ 동의함   □ 동의하지 않음' 형식 */
+/** '☑ 동의   □ 비동의' 형식 */
 function checkLine_(options, value) {
   return options.map((o) => (o === value ? CHECKED_MARK_ : UNCHECKED_MARK_) + ' ' + o).join('   ');
 }
@@ -259,18 +260,19 @@ function insertImageAt_(found, blob) {
 function fitImage_(image) {
   const width = image.getWidth();
   const height = image.getHeight();
-  if (!width || !height) return image;
+  if (!width || !height) return;
   const scale = Math.min(SIGNATURE_MAX_WIDTH / width, SIGNATURE_MAX_HEIGHT / height, 1);
-  return image.setWidth(Math.round(width * scale)).setHeight(Math.round(height * scale));
+  image.setWidth(Math.round(width * scale)).setHeight(Math.round(height * scale));
 }
 
 /* ============================================================
  * 저장 폴더 · 파일 이름
  * ============================================================ */
 
-/** 저장 폴더(양식 → config 기본 → 내 드라이브) + 하위폴더 규칙 */
+/** 저장 폴더(양식 → config 기본 → 내 드라이브/기본 폴더 이름) + 하위폴더 규칙(비면 기본 규칙) */
 function resolveFolder_(form, values) {
   let folder;
+  const parts = [];
   if (form.folderId) {
     try {
       folder = DriveApp.getFolderById(form.folderId);
@@ -287,13 +289,14 @@ function resolveFolder_(form, values) {
     }
   } else {
     folder = DriveApp.getRootFolder();
+    parts.push(sanitizeFileName_(DEFAULT_FOLDER_NAME, '제출 문서'));
   }
 
-  if (!form.subfolder) return folder;
-  const parts = fillPattern_(form.subfolder, values, '미입력')
+  fillPattern_(form.subfolder || DEFAULT_SUBFOLDER, values, '미입력')
     .split('/')
     .map((p) => sanitizeFileName_(p, ''))
-    .filter(Boolean);
+    .filter(Boolean)
+    .forEach((p) => parts.push(p));
   if (!parts.length) return folder;
   // 동시에 여러 명이 제출해도 같은 이름의 폴더가 두 개 생기지 않도록 잠근다.
   const lock = LockService.getScriptLock();

@@ -11,20 +11,30 @@
 
 /**
  * 입력 칸 유형. 문서에 {{항목명: 유형}}으로 적는다. (유형을 적지 않으면 text)
- * 지시자(유형·required·if·or·help)와 공통 자리표시자는 영어 소문자로만 적는다. (한글 항목명과 구분하려고)
- *   choice : 괄호 안 선택지가 필요한 유형
+ * 지시자(유형·max·min·help·if·and·or)와 공통 자리표시자는 영어 소문자로만 적는다. (한글 항목명과 구분하려고)
+ *   choice       : 괄호 안 선택지가 필요하고 max·min으로 여러 개 고르기를 할 수 있는 유형
+ *   fixedOptions : 선택지가 정해진 유형 (괄호 안에 적지 않음)
  *   example / screen / output : '사용법' 탭과 오류 안내에 쓰는 설명
  */
 const FIELD_TYPES_ = {
   text: { example: '{{이름}}', screen: '글 입력 칸 (유형을 적지 않으면 text). 길게 쓰면 칸이 늘어남', output: '입력한 글자 (줄바꿈 유지)' },
-  select: { choice: true, example: '{{성별: select(남, 여)}}', screen: '펼침 목록에서 하나 고르기', output: '고른 선택지' },
-  multi: { choice: true, example: '{{과목: multi(국어, 수학, 과학)}}', screen: '여러 개 고르기', output: '고른 선택지를 쉼표로 이어서' },
-  agree: {
+  list: {
     choice: true,
-    defaultOptions: ['동의함', '동의하지 않음'],
+    example: '{{성별: list(남, 여)}}',
+    screen: '펼침 목록에서 하나 고르기. max·min이 2 이상이면 체크 목록에서 여러 개 고르기',
+    output: '고른 선택지 (여러 개면 쉼표로 이어서)',
+  },
+  button: {
+    choice: true,
+    example: '{{학년: button(1학년, 2학년, 3학년)}}',
+    screen: '선택지마다 버튼으로 고르기. max·min이 2 이상이면 여러 개 고르기',
+    output: '고른 선택지 (여러 개면 쉼표로 이어서)',
+  },
+  agree: {
+    fixedOptions: ['동의', '비동의'],
     example: '{{개인정보 동의: agree}}',
-    screen: '동의함 / 동의하지 않음 고르기 (괄호로 문구 변경 가능)',
-    output: '☑ 동의함   □ 동의하지 않음 처럼 체크 표시',
+    screen: '동의 / 비동의 고르기',
+    output: '☑ 동의   □ 비동의 처럼 체크 표시',
   },
   sign: { example: '{{보호자 서명: sign}}', screen: '손가락·마우스로 서명', output: '서명 그림' },
 };
@@ -34,7 +44,7 @@ const LIST_COLUMNS_ = [
   { key: 'id', label: '양식ID', required: true },
   { key: 'name', label: '양식이름', required: true },
   { key: 'description', label: '설명', required: true },
-  { key: 'docId', label: '양식문서', required: true, aliases: ['양식문서ID'] },
+  { key: 'docId', label: '양식문서', required: true },
   { key: 'folderId', label: '저장폴더ID', required: true },
   { key: 'fileName', label: '파일이름', required: true },
   { key: 'subfolder', label: '하위폴더' },
@@ -44,8 +54,17 @@ const LIST_COLUMNS_ = [
 /** 모든 양식에서 쓸 수 있는 공통 자리표시자 (입력 칸 없이 자동으로 채워짐) */
 const COMMON_PLACEHOLDERS_ = ['form_name', 'submitted_at', 'date', 'year', 'month', 'day', 'semester', 'submitter'];
 
-/** 설정에 쓰는 지시자 (유형 이름 외). 대문자로 적었을 때 소문자로 고치라고 알려 주는 데 쓴다. */
-const SETTING_WORDS_ = ['required', 'if', 'or', 'help'];
+/**
+ * 유형 이름 외의 지시자 (설정 max·min·help·if, 조건 낱말 and·or).
+ * 항목명으로 쓸 수 없고, 대문자로 적으면 소문자로 고치라고 알려 준다.
+ */
+const SETTING_WORDS_ = ['max', 'min', 'help', 'if', 'and', 'or'];
+
+/** 따옴표로 쓰는 글자 (Google 문서가 바꾼 둥근 따옴표 포함) */
+const QUOTE_CHARS_ = '"“”＂';
+
+/** 쉼표·괄호가 들어간 글자를 큰따옴표로 감싸라는 안내 */
+const QUOTE_HINT_ = '쉼표나 괄호가 들어간 글자는 큰따옴표로 감싸 주세요. 예) help("예) 010-1234-5678")';
 
 /** 양식ID 규칙: 영문·숫자·-·_ */
 const FORM_ID_PATTERN_ = /^[A-Za-z0-9_-]{1,64}$/;
@@ -162,7 +181,7 @@ function parseFormList_(ss) {
 
 /**
  * 표 형태의 탭을 머리글 이름으로 읽는다. (열 순서와 무관)
- * @return {{rows: Object[], problems: Object[]}}
+ * @return {{rows: Object[], problems: Object[], index: Object}} index: {열 키: 열 번호(0부터)}
  */
 function readTable_(sheet, columns) {
   const range = sheet.getDataRange();
@@ -176,7 +195,7 @@ function readTable_(sheet, columns) {
   header.forEach((cell, i) => {
     const norm = normHeader_(cell);
     if (!norm) return;
-    const column = columns.filter((c) => [c.label].concat(c.aliases || []).some((label) => normHeader_(label) === norm))[0];
+    const column = columns.filter((c) => normHeader_(c.label) === norm)[0];
     if (!column) return; // 메모용 열 등 모르는 열은 그대로 둔다.
     if (index[column.key] !== undefined) {
       problems.push(problem_(where, "'" + column.label + "' 머리글이 두 번 있습니다. 하나만 남기세요."));
@@ -556,15 +575,16 @@ function glyphLabel_(glyph, n) {
 
 /**
  * 자리표시자 원문 해석. 형식: {{항목명[*][: 설정, 설정, …]}}
- *   *              필수 (설정에 required라고 적어도 됨)
- *   유형(선택지)    예) select(남, 여) — 선택지는 쉼표로 (쉼표가 없으면 / 로도 구분)
- *   if 항목=값      표시조건 (여러 값은 / 또는 or)
- *   help 글…        입력 칸 아래 안내 문구 (맨 뒤에 적으며, 쉼표가 있어도 끝까지 안내 문구)
- * 지시자는 영어 소문자만 인식한다. 대문자로 적으면 소문자로 고치라고 알려 준다.
- * @return {Object} {raw, name, common?, required, type, options, condition, help, hasSettings, error?}
+ *   *                    필수 (항목명 바로 뒤)
+ *   유형(선택지, …)       예) list(남, 여), button(1학년, 2학년), agree, sign, text
+ *   max(숫자)·min(숫자)   list·button에서 여러 개 고르기 (숫자가 2 이상일 때)
+ *   help(안내 글)         입력 칸 아래 안내 문구
+ *   if(조건)              표시조건. 예) if(귀가방법=도보/기타), if((A=동의 or B=동의) and C=예)
+ * 쉼표·괄호가 들어간 글자는 큰따옴표로 감싼다. 지시자는 영어 소문자만 인식한다.
+ * @return {Object} {raw, name, common?, required, type, options, min, max, condition, help, hasSettings, error?}
  */
 function parsePlaceholder_(raw) {
-  const result = { raw: raw, name: '', required: false, type: '', options: null, condition: '', help: '', hasSettings: false };
+  const result = { raw: raw, name: '', required: false, type: '', options: null, min: 0, max: 0, condition: '', help: '', hasSettings: false };
   const inner = String(raw).slice(2, -2);
   if (/[\r\n\u000b]/.test(inner)) return fail_(result, '자리표시자 안에 줄바꿈이 있습니다. {{ }} 안은 한 줄로 적으세요.');
   const colon = inner.search(/[:：]/);
@@ -591,6 +611,9 @@ function parsePlaceholder_(raw) {
     result.common = true;
     return result;
   }
+  if (isDirective_(lower)) {
+    return fail_(result, q_(result.name, '은/는') + ' 지시자라 항목명으로 쓸 수 없습니다. 다른 이름을 쓰세요.');
+  }
   if (settings) parseSettings_(settings, result);
   return result;
 }
@@ -600,90 +623,173 @@ function fail_(result, message) {
   return result;
 }
 
-/** 콜론 뒤 설정 해석 (유형·required·if·help) */
+/** 유형 이름이나 설정 지시자인지 (소문자로 비교) */
+function isDirective_(word) {
+  return Object.prototype.hasOwnProperty.call(FIELD_TYPES_, word) || SETTING_WORDS_.indexOf(word) >= 0;
+}
+
+/** 따옴표 글자인지 (빈 글자는 아님) */
+function isQuoteChar_(ch) {
+  return ch !== '' && QUOTE_CHARS_.indexOf(ch) >= 0;
+}
+
+/** 콜론 뒤 설정 해석 (유형·max·min·help·if) */
 function parseSettings_(text, result) {
-  const split = splitSettings_(text);
+  const split = splitTop_(text, ',，');
+  if (split.quoted) return fail_(result, '큰따옴표 짝이 맞지 않습니다. 글자를 감쌀 때는 앞뒤에 하나씩 적으세요.');
+  if (!split.balanced) return fail_(result, '괄호 짝이 맞지 않습니다. 설정은 list(남, 여)처럼 괄호를 열고 닫으세요. ' + QUOTE_HINT_);
   for (let i = 0; i < split.items.length; i++) {
-    const hint = lowercaseHint_(split.items[i].text);
-    if (hint) return fail_(result, hint);
-  }
-  if (!split.balanced) return fail_(result, '괄호 짝이 맞지 않습니다. 선택지는 select(남, 여)처럼 괄호로 감싸세요.');
-  for (let i = 0; i < split.items.length; i++) {
-    const item = split.items[i];
-    if (item.help) {
-      result.help = item.text.replace(/^help\s*[:：]?\s*/, '').trim();
-      continue;
-    }
-    const t = item.text;
+    const t = split.items[i].trim();
     if (!t) continue;
-    if (t === 'required') {
-      result.required = true;
-      continue;
-    }
-    if (/^if(\s|$)/.test(t)) {
-      if (result.condition) return fail_(result, '표시조건은 하나만 적을 수 있습니다. 여러 값은 if 귀가방법=버스/기타처럼 / 로 이으세요.');
-      result.condition = t.replace(/^if\s*/, '');
-      if (!result.condition) return fail_(result, "if 뒤에 '항목=값'을 적으세요. 예) if 귀가방식=동행귀가");
-      continue;
-    }
-    if (/[=＝]/.test(t)) return fail_(result, "표시조건은 앞에 if를 붙여 적습니다. '" + t + "' → 'if " + t + "'");
-    const m = /^([^(（]+?)\s*(?:[(（]([\s\S]*)[)）])?$/.exec(t);
-    const typeName = m ? m[1].replace(/\s+/g, '') : '';
-    if (!m || !Object.prototype.hasOwnProperty.call(FIELD_TYPES_, typeName)) {
-      return fail_(result, q_(t, '은/는') + ' 알 수 없는 설정입니다. 유형(' + Object.keys(FIELD_TYPES_).join(', ') + '), required, if 항목=값, help 중에서 영어 소문자로 적으세요.');
-    }
-    if (result.type) return fail_(result, '유형을 두 번 적었습니다. (' + result.type + ', ' + typeName + ')');
-    result.type = typeName;
-    if (m[2] !== undefined) result.options = splitChoices_(m[2]);
+    const message = applySetting_(t, result);
+    if (message) return fail_(result, message);
   }
   return result;
 }
 
-/** 설정 조각이 대문자가 섞인 지시자로 시작하면 소문자로 고치라는 문구 ('Text' → 'text') */
-function lowercaseHint_(text) {
-  const m = /^\s*([A-Za-z]+)/.exec(text);
-  if (!m || m[1] === m[1].toLowerCase()) return '';
-  const lower = m[1].toLowerCase();
-  if (!Object.prototype.hasOwnProperty.call(FIELD_TYPES_, lower) && SETTING_WORDS_.indexOf(lower) < 0) return '';
-  return "지시자는 영어 소문자로만 적습니다. '" + m[1] + "' → '" + lower + "'";
+/** 설정 하나를 result에 담는다. 문제가 있으면 안내 문구를 돌려준다. */
+function applySetting_(t, result) {
+  const call = parseCall_(t);
+  if (call.rest) return "'" + t + "'에서 괄호가 끝난 뒤에 글자가 더 있습니다. " + QUOTE_HINT_;
+  const word = call.word;
+  const compact = word.replace(/\s+/g, '');
+  const lower = compact.toLowerCase();
+  if (/^[*＊]|[*＊]$/.test(compact)) return '필수 표시 *는 항목명 바로 뒤에 붙입니다. 예) {{이름*: list(남, 여)}}';
+  if (call.args === null && /[=＝]/.test(word)) return "표시조건은 if(…)로 감싸 적습니다. '" + word + "' → 'if(" + word.replace(/^if\s+/i, '') + ")'";
+  if (lower !== compact && isDirective_(lower)) return "지시자는 영어 소문자로만 적습니다. '" + compact + "' → '" + lower + "'";
+
+  if (compact === 'max' || compact === 'min') {
+    if (result[compact]) return compact + '를 두 번 적었습니다. 하나만 남기세요.';
+    const digits = String(call.args === null ? '' : call.args)
+      .trim()
+      .replace(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xfee0));
+    if (!/^\d+$/.test(digits) || Number(digits) < 1) return compact + ' 괄호 안에는 1 이상의 정수를 적으세요. 예) ' + compact + '(2)';
+    result[compact] = Number(digits);
+    return '';
+  }
+  if (compact === 'help') {
+    if (result.help) return 'help를 두 번 적었습니다. 하나만 남기세요.';
+    const args = splitArgs_(call.args === null ? '' : call.args, ',，');
+    if (args.error) return args.error;
+    if (args.values.length > 1) return '안내 문구에 쉼표가 있으면 큰따옴표로 감싸 주세요. 예) help("예) 부, 모, 조부")';
+    if (!args.values[0]) return 'help 괄호 안에 안내 문구를 적으세요. 예) help(24시간제로 적어 주세요)';
+    result.help = args.values[0];
+    return '';
+  }
+  if (compact === 'if') {
+    if (result.condition) return '표시조건은 if(…) 하나만 적을 수 있습니다. 조건이 여러 개면 and·or로 이어 한 if 안에 적으세요. 예) if(A=동의 or B=동의)';
+    result.condition = normName_(call.args === null ? '' : call.args);
+    if (!result.condition) return 'if 괄호 안에 조건을 적으세요. 예) if(귀가방식=동행귀가)';
+    return '';
+  }
+  if (Object.prototype.hasOwnProperty.call(FIELD_TYPES_, compact)) {
+    if (result.type) return '유형을 두 번 적었습니다. (' + result.type + ', ' + compact + ')';
+    result.type = compact;
+    const type = FIELD_TYPES_[compact];
+    const args = splitArgs_(call.args === null ? '' : call.args, ',，、');
+    if (args.error) return args.error;
+    if (type.choice) {
+      result.options = args.values.filter(Boolean);
+    } else if (args.values.some(Boolean)) {
+      if (type.fixedOptions) return "agree의 선택지는 '" + type.fixedOptions.join("', '") + "'로 정해져 있어 괄호 안에 적지 않습니다. 문구를 바꾸려면 button(…)을 쓰세요. 예) button(동의합니다, 동의하지 않습니다)";
+      return "'" + compact + "' 유형은 괄호 안에 적을 것이 없습니다. 고르는 항목이라면 list(…)나 button(…)으로 적으세요.";
+    }
+    return '';
+  }
+  return q_(t, '은/는') + ' 알 수 없는 설정입니다. 유형(' + Object.keys(FIELD_TYPES_).join(', ') + '), max(…), min(…), help(…), if(…) 중에서 영어 소문자로 적으세요.';
 }
 
 /**
- * 설정 글자를 괄호 밖 쉼표로 나눈다. 'help'로 시작하는 조각부터는 끝까지 하나로 본다.
- * (대문자 Help도 여기서는 나눠 두고, parseSettings_에서 소문자로 고치라고 알린다)
- * @return {{items: {text, help?}[], balanced: boolean}}
+ * 따옴표 밖의 글자를 하나씩 본다. visit(글자, 위치, 괄호 깊이)
+ * 여는 괄호와 그 짝인 닫는 괄호는 같은 깊이로 넘긴다. 따옴표 안의 "" 는 글자 " 하나로 본다.
+ * @return {{quoted: boolean, balanced: boolean}} quoted: 따옴표가 닫히지 않음
  */
-function splitSettings_(text) {
-  const isHelp = (from) => /^\s*help(\s|[:：]|$)/i.test(text.slice(from));
-  if (isHelp(0)) return { items: [{ text: text.trim(), help: true }], balanced: true };
-  const items = [];
+function scanOutsideQuotes_(text, visit) {
   let depth = 0;
+  let quoted = false;
   let stray = false;
-  let start = 0;
   for (let i = 0; i < text.length; i++) {
     const ch = text.charAt(i);
+    if (isQuoteChar_(ch)) {
+      if (quoted && isQuoteChar_(text.charAt(i + 1))) i++;
+      else quoted = !quoted;
+      continue;
+    }
+    if (quoted) continue;
     if (ch === '(' || ch === '（') {
+      visit(ch, i, depth);
       depth++;
     } else if (ch === ')' || ch === '）') {
       if (depth === 0) stray = true;
       else depth--;
-    } else if ((ch === ',' || ch === '，') && depth === 0) {
-      items.push({ text: text.slice(start, i).trim() });
-      start = i + 1;
-      if (isHelp(start)) {
-        items.push({ text: text.slice(start).trim(), help: true });
-        return { items: items, balanced: !stray };
-      }
+      visit(ch, i, depth);
+    } else {
+      visit(ch, i, depth);
     }
   }
-  items.push({ text: text.slice(start).trim() });
-  return { items: items, balanced: depth === 0 && !stray };
+  return { quoted: quoted, balanced: depth === 0 && !stray };
 }
 
-/** 괄호 안 선택지 나누기: 쉼표(반각·전각·、)가 있으면 쉼표로, 없으면 / 로 */
-function splitChoices_(text) {
-  const parts = /[,，、]/.test(text) ? text.split(/[,，、]/) : text.split(/[/／]/);
-  return parts.map(normName_).filter(Boolean);
+/** 따옴표·괄호 밖의 구분 글자(seps)로 나눈다. @return {{items: string[], quoted, balanced}} */
+function splitTop_(text, seps) {
+  const items = [];
+  let start = 0;
+  const state = scanOutsideQuotes_(text, (ch, i, depth) => {
+    if (depth === 0 && seps.indexOf(ch) >= 0) {
+      items.push(text.slice(start, i));
+      start = i + 1;
+    }
+  });
+  items.push(text.slice(start));
+  return { items: items, quoted: state.quoted, balanced: state.balanced };
+}
+
+/** 설정 조각 'word(인자)' 나누기 (괄호 짝은 미리 확인한다). 괄호가 없으면 args = null */
+function parseCall_(t) {
+  let open = -1;
+  let close = -1;
+  scanOutsideQuotes_(t, (ch, i, depth) => {
+    if (depth !== 0) return;
+    if ((ch === '(' || ch === '（') && open < 0) open = i;
+    else if ((ch === ')' || ch === '）') && open >= 0 && close < 0) close = i;
+  });
+  if (open < 0) return { word: t.trim(), args: null, rest: '' };
+  return { word: t.slice(0, open).trim(), args: t.slice(open + 1, close), rest: t.slice(close + 1).trim() };
+}
+
+/** 괄호 안 값들을 쉼표로 나누고 따옴표를 벗긴다. @return {{values: string[], error?: string}} */
+function splitArgs_(text, seps) {
+  const values = [];
+  const parts = splitTop_(text, seps).items;
+  for (let i = 0; i < parts.length; i++) {
+    const v = unquote_(parts[i]);
+    if (v.error) return { values: [], error: v.error };
+    values.push(v.value);
+  }
+  return { values: values.length === 1 && !values[0] ? [] : values };
+}
+
+/** 값 하나: 따옴표로 감쌌으면 벗기고("" → "), 아니면 그대로. 앞뒤 공백은 지운다. */
+function unquote_(raw) {
+  const t = String(raw).trim();
+  if (!isQuoteChar_(t.charAt(0))) {
+    if (t.split('').some(isQuoteChar_)) return { error: "'" + t + "' → 큰따옴표는 글자 전체를 앞뒤로 감싸야 합니다. 예) \"" + t.replace(/["“”＂]/g, '') + '"' };
+    return { value: normName_(t) };
+  }
+  let out = '';
+  for (let i = 1; i < t.length; i++) {
+    const ch = t.charAt(i);
+    if (!isQuoteChar_(ch)) {
+      out += ch;
+    } else if (isQuoteChar_(t.charAt(i + 1))) {
+      out += '"';
+      i++;
+    } else {
+      if (t.slice(i + 1).trim()) return { error: "'" + t + "' → 큰따옴표가 닫힌 뒤에 글자가 더 있습니다. 글자 전체를 따옴표 안에 넣으세요." };
+      return { value: normName_(out) };
+    }
+  }
+  return { error: '큰따옴표 짝이 맞지 않습니다. 글자를 감쌀 때는 앞뒤에 하나씩 적으세요.' };
 }
 
 /**
@@ -693,7 +799,7 @@ function splitChoices_(text) {
 function buildFields_(ctx) {
   const order = [];
   const info = {};
-  const settingsKey = (d) => JSON.stringify([d.required, d.type, d.options, normName_(d.condition), d.help]);
+  const settingsKey = (d) => JSON.stringify([d.required, d.type, d.options, d.min, d.max, d.condition, d.help]);
   ctx.occurrences.forEach((o) => {
     let item = info[o.name];
     if (!item) {
@@ -712,24 +818,35 @@ function buildFields_(ctx) {
   const fields = [];
   const byName = {};
   order.forEach((item) => {
-    const def = item.def || { raw: '{{' + item.name + '}}', required: false, type: '', options: null, condition: '', help: '' };
+    const def = item.def || { raw: '{{' + item.name + '}}', required: false, type: '', options: null, min: 0, max: 0, condition: '', help: '' };
     const typeName = def.type || 'text';
     const type = FIELD_TYPES_[typeName];
-    const field = { name: item.name, type: typeName, required: !!def.required, options: [], help: def.help, condition: null, block: item.block };
+    const field = { name: item.name, type: typeName, required: !!def.required, options: [], multiple: false, min: 0, max: 0, help: def.help, condition: null, block: item.block };
     const report = (text) => ctx.problems.push(problem_(ctx.where, def.raw + ' → ' + text));
 
     if (type.choice) {
-      const list = def.options && def.options.length ? def.options : type.defaultOptions || [];
+      const list = def.options || [];
       const dup = list.filter((o, i) => list.indexOf(o) !== i);
       if (!list.length) report('선택지가 없습니다. 괄호 안에 고를 값을 쉼표로 적으세요. 예) ' + type.example);
       else if (dup.length) report('선택지 ' + q_(dup[0], '이/가') + ' 두 번 적혀 있습니다. 하나를 지우세요.');
       field.options = list.filter((o, i) => list.indexOf(o) === i);
-    } else if (def.options) {
-      report("'" + typeName + "' 유형은 괄호 선택지를 쓰지 않습니다. 고르는 항목이라면 select·multi·agree 중 하나로 적으세요.");
+      const count = field.options.length;
+      if (def.max && def.max > count) report('max(' + def.max + ')가 선택지 수(' + count + '개)보다 큽니다. 선택지 수 이하로 적으세요.');
+      else if (def.min && def.min > count) report('min(' + def.min + ')이 선택지 수(' + count + '개)보다 큽니다. 선택지 수 이하로 적으세요.');
+      else if (def.min && def.max && def.min > def.max) report('min(' + def.min + ')이 max(' + def.max + ')보다 큽니다. min은 max 이하로 적으세요.');
+      field.multiple = def.max >= 2 || def.min >= 2;
+      if (field.multiple) {
+        field.min = def.min || 0;
+        field.max = def.max || count;
+      }
+    } else {
+      if (type.fixedOptions) field.options = type.fixedOptions.slice();
+      if (def.min || def.max) report("max·min은 list·button에만 쓸 수 있습니다. ('" + typeName + "' 유형)");
     }
     if (def.condition) {
-      const parsed = parseCondition_(def.condition, item.name, byName, info);
-      if (parsed.error) report(parsed.error);
+      const parsed = parseCondition_(def.condition);
+      const error = parsed.error || conditionProblem_(parsed.condition, item.name, byName, info);
+      if (error) report(error);
       else field.condition = parsed.condition;
     }
     fields.push(field);
@@ -739,33 +856,155 @@ function buildFields_(ctx) {
 }
 
 /**
- * 표시조건 해석. 형식: 항목=값 (앞의 if는 parseSettings_에서 떼어 냄. 여러 값은 / 또는 or)
+ * 표시조건 해석 (if 괄호 안의 글자). 형식:
+ *   항목=값            한 항목의 값 여러 개는 / 로 잇는다. 예) 귀가방법=도보/기타
+ *   조건 and 조건 …     모두 맞으면 / 조건 or 조건 …  하나라도 맞으면
+ *   (조건 or 조건) and 조건   and와 or를 섞을 때는 괄호로 묶는다.
  * @return {{condition?: Object, error?: string}}
+ *   condition: {field, values} 또는 {op: 'and'|'or', items: [condition, …]}
  */
-function parseCondition_(text, ownName, byName, all) {
-  const t = normName_(text);
-  const match = /^(.+?)\s*[=＝]\s*(.+)$/.exec(t);
-  if (!match) return { error: "표시조건은 'if 항목=값' 형식으로 적으세요. 예) {{동행인: if 귀가방식=동행귀가}}" };
-  const sourceName = normName_(match[1]);
-  const values = match[2]
-    .split(/\s*[/／]\s*|\s+or\s+/)
-    .map(normName_)
-    .filter(Boolean);
-  if (!values.length) return { error: "표시조건에 값이 없습니다. '=' 뒤에 값을 적으세요. 예) if 귀가방식=동행귀가" };
-  if (sourceName === ownName) return { error: '자기 자신을 표시조건으로 쓸 수 없습니다.' };
+function parseCondition_(text) {
+  const tokens = conditionTokens_(text);
+  if (tokens.error) return { error: tokens.error };
+  const list = tokens.list;
+  const example = ' 예) if(귀가방법=도보/기타)';
+  let pos = 0;
+  const isValue = (tk) => tk && (tk.t === 'text' || tk.t === 'quoted');
+
+  const term = () => {
+    const tk = list[pos];
+    if (!tk) return { error: '조건이 비어 있거나 and·or 뒤에 조건이 없습니다.' + example };
+    if (tk.t === 'lp') {
+      pos++;
+      const inner = expr();
+      if (inner.error) return inner;
+      if (!list[pos] || list[pos].t !== 'rp') return { error: '표시조건의 괄호 짝이 맞지 않습니다.' };
+      pos++;
+      return inner;
+    }
+    if (!isValue(tk)) return { error: "'" + tk.v + "' 앞에 항목 이름이 없습니다. 조건은 '항목=값' 형식으로 적으세요." + example };
+    pos++;
+    const name = normName_(tk.v);
+    if (!list[pos] || list[pos].t !== 'eq') {
+      return { error: q_(name, '은/는') + " 조건이 아닙니다. 조건은 '항목=값' 형식으로 적고, 한 항목의 값 여러 개는 / 로 잇습니다." + example };
+    }
+    pos++;
+    const values = [];
+    for (;;) {
+      if (!isValue(list[pos]) || !normName_(list[pos].v)) return { error: "'" + name + "=' 뒤에 값이 없습니다." + example };
+      values.push(normName_(list[pos].v));
+      pos++;
+      if (!list[pos] || list[pos].t !== 'sl') break;
+      pos++;
+    }
+    return { condition: { field: name, values: values } };
+  };
+
+  const expr = () => {
+    const first = term();
+    if (first.error) return first;
+    const items = [first.condition];
+    let op = '';
+    while (list[pos] && list[pos].t === 'kw') {
+      const word = list[pos].v;
+      if (word !== word.toLowerCase()) return { error: "지시자는 영어 소문자로만 적습니다. '" + word + "' → '" + word.toLowerCase() + "'" };
+      if (op && word !== op) return { error: 'and와 or를 섞어 쓸 때는 괄호로 묶어야 합니다. 예) if((A=동의 or B=동의) and C=예)' };
+      op = word;
+      pos++;
+      const next = term();
+      if (next.error) return next;
+      items.push(next.condition);
+    }
+    return { condition: op ? { op: op, items: items } : first.condition };
+  };
+
+  const result = expr();
+  if (result.error) return result;
+  if (pos < list.length) {
+    if (list[pos].t === 'rp') return { error: '표시조건의 괄호 짝이 맞지 않습니다.' };
+    return { error: "표시조건을 읽을 수 없습니다. '" + list[pos].v + "' 부분을 확인하세요. 조건 사이는 and·or로 잇고, 값에 = / 괄호가 들어 있으면 큰따옴표로 감싸세요." };
+  }
+  return result;
+}
+
+/**
+ * 표시조건 글자를 낱말로 나눈다.
+ *   lp '(' · rp ')' · eq '=' · sl '/' · kw and/or · quoted 따옴표 글자 · text 그 밖의 글자
+ * and·or는 앞뒤가 띄어쓰기·괄호·처음·끝일 때만 낱말로 본다. (대소문자 구분 없이 찾고, 대문자는 해석할 때 알린다)
+ */
+function conditionTokens_(text) {
+  const list = [];
+  let buf = '';
+  const flush = () => {
+    const re = /(^|\s)(and|or)(?=\s|$)/gi;
+    let last = 0;
+    let m;
+    while ((m = re.exec(buf))) {
+      const before = buf.slice(last, m.index).trim();
+      if (before) list.push({ t: 'text', v: before });
+      list.push({ t: 'kw', v: m[2] });
+      last = m.index + m[0].length;
+    }
+    const rest = buf.slice(last).trim();
+    if (rest) list.push({ t: 'text', v: rest });
+    buf = '';
+  };
+  const marks = { '(': 'lp', '（': 'lp', ')': 'rp', '）': 'rp', '=': 'eq', '＝': 'eq', '/': 'sl', '／': 'sl' };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charAt(i);
+    if (isQuoteChar_(ch)) {
+      flush();
+      let out = '';
+      let closed = false;
+      for (i++; i < text.length; i++) {
+        const c = text.charAt(i);
+        if (!isQuoteChar_(c)) out += c;
+        else if (isQuoteChar_(text.charAt(i + 1))) {
+          out += '"';
+          i++;
+        } else {
+          closed = true;
+          break;
+        }
+      }
+      if (!closed) return { error: '큰따옴표 짝이 맞지 않습니다. 글자를 감쌀 때는 앞뒤에 하나씩 적으세요.' };
+      list.push({ t: 'quoted', v: out });
+    } else if (marks[ch]) {
+      flush();
+      list.push({ t: marks[ch], v: ch });
+    } else {
+      buf += ch;
+    }
+  }
+  flush();
+  return { list: list };
+}
+
+/** 표시조건에 쓴 항목·값이 맞는지 확인한다. @return {string} 문제 안내 ('' = 문제 없음) */
+function conditionProblem_(node, ownName, byName, all) {
+  if (node.op) {
+    for (let i = 0; i < node.items.length; i++) {
+      const message = conditionProblem_(node.items[i], ownName, byName, all);
+      if (message) return message;
+    }
+    return '';
+  }
+  const sourceName = node.field;
+  if (sourceName === ownName) return '자기 자신을 표시조건으로 쓸 수 없습니다.';
   const source = byName[sourceName];
   if (!source) {
-    if (all[sourceName]) return { error: "표시조건에 쓴 '" + sourceName + "' 항목은 문서에서 이 항목보다 앞에 나와야 합니다." };
-    return { error: "표시조건에 쓴 '" + sourceName + "'이라는 항목이 문서에 없습니다. 항목 이름을 똑같이 적으세요." };
+    if (all[sourceName]) return "표시조건에 쓴 '" + sourceName + "' 항목은 문서에서 이 항목보다 앞에 나와야 합니다.";
+    return '표시조건에 쓴 ' + q_(sourceName, '이라는/라는') + ' 항목이 문서에 없습니다. 항목 이름을 똑같이 적으세요.';
   }
-  if (!FIELD_TYPES_[source.type].choice) {
-    return { error: '표시조건에는 select·multi·agree 유형 항목만 쓸 수 있습니다. (' + q_(sourceName, '은/는') + " '" + source.type + "' 유형)" };
+  const sourceType = FIELD_TYPES_[source.type];
+  if (!sourceType.choice && !sourceType.fixedOptions) {
+    return '표시조건에는 list·button·agree 유형 항목만 쓸 수 있습니다. (' + q_(sourceName, '은/는') + " '" + source.type + "' 유형)";
   }
-  const missing = values.filter((v) => source.options.indexOf(v) < 0);
+  const missing = node.values.filter((v) => source.options.indexOf(v) < 0);
   if (missing.length) {
-    return { error: "'" + sourceName + "'의 선택지에 " + missing.map((v) => "'" + v + "'").join(', ') + '이(가) 없습니다. (선택지: ' + source.options.join(', ') + ')' };
+    return "'" + sourceName + "'의 선택지에 " + missing.map((v) => "'" + v + "'").join(', ') + '이(가) 없습니다. (선택지: ' + source.options.join(', ') + ')';
   }
-  return { condition: { field: sourceName, values: values } };
+  return '';
 }
 
 /** 머리글·바닥글·다른 탭의 자리표시자는 본문 항목을 가리키는 이름만 허용한다. */

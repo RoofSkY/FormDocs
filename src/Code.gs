@@ -3,7 +3,7 @@
  *
  * 관리자는 Google 문서 한 장으로 신청서를 만든다. ("문서가 곧 양식")
  *   - 문서를 종이 양식처럼 자유롭게 꾸미고, 값을 받을 자리에 {{항목명}}을 적는다.
- *       성명: {{아동 성명*}}   성별: {{성별: select(남, 여)}}   (서명) {{보호자 서명*: sign}}
+ *       성명: {{아동 성명*}}   성별: {{성별: list(남, 여)}}   (서명) {{보호자 서명*: sign}}
  *   - 웹 화면에는 문서 내용이 그대로 보이고, 자리표시자마다 입력 칸이 생긴다.
  *   - 제출하면 같은 문서를 복사해 자리표시자를 입력값으로 채운다.
  *
@@ -41,6 +41,8 @@ const CONFIG_PROBLEM_MESSAGE_ = '신청서 설정에 문제가 있어 제출하�
 const MESSAGES_ = {
   invalid: '값의 형식이 올바르지 않습니다. 다시 입력해 주세요.',
   notOption: '선택지에 없는 값입니다. 다시 골라 주세요.',
+  tooFew: '{n}개 이상 골라 주세요.',
+  tooMany: '{n}개까지 고를 수 있습니다.',
   signature: '서명을 읽을 수 없습니다. 지우고 다시 서명해 주세요.',
   signatureTooBig: '서명 그림이 너무 큽니다. 지우고 다시 서명해 주세요.',
 };
@@ -149,6 +151,9 @@ function clientForm_(form) {
       type: f.type,
       required: f.required,
       options: f.options,
+      multiple: f.multiple,
+      min: f.min,
+      max: f.max,
       help: f.help,
       condition: f.condition,
       block: f.block,
@@ -163,7 +168,7 @@ function clientForm_(form) {
 /**
  * 신청서 제출 (클라이언트에서 google.script.run으로 호출)
  * @param {string} formId 양식ID
- * @param {Object} answers {항목명: 값} — multi는 배열, sign은 PNG data URL
+ * @param {Object} answers {항목명: 값} — 여러 개 고르기(max·min)는 배열, sign은 PNG data URL
  * @return {Object} {ok:true, name, url} 또는 {ok:false, message, errors?, problems?}
  */
 function submitForm(formId, answers) {
@@ -247,11 +252,11 @@ function validateAnswers_(form, answers) {
   const errors = [];
 
   form.fields.forEach((field) => {
-    const shown = conditionMet_(field, visible, values);
+    const shown = !field.condition || conditionTrue_(field.condition, visible, values);
     visible[field.name] = shown;
     if (!shown) {
       // 숨겨진 항목의 값은 버리고 필수 검사도 하지 않는다.
-      values[field.name] = field.type === 'multi' ? [] : '';
+      values[field.name] = field.multiple ? [] : '';
       return;
     }
     const raw = Object.prototype.hasOwnProperty.call(source, field.name) ? source[field.name] : undefined;
@@ -266,25 +271,30 @@ function validateAnswers_(form, answers) {
   return { values: values, visible: visible, errors: errors };
 }
 
-/** 표시조건 충족 여부 (조건에 쓴 항목이 숨겨져 있으면 충족하지 않음) */
-function conditionMet_(field, visible, values) {
-  const condition = field.condition;
-  if (!condition) return true;
-  if (!visible[condition.field]) return false;
-  const value = values[condition.field];
+/**
+ * 조건 하나를 계산한다. (javascript.html의 conditionTrue와 같은 규칙)
+ *   {field, values}: 그 항목에서 값 중 하나라도 골랐으면 참 (조건에 쓴 항목이 숨겨져 있으면 거짓)
+ *   {op: 'and'|'or', items}: 모두 / 하나라도 참
+ */
+function conditionTrue_(node, visible, values) {
+  if (node.op === 'and') return node.items.every((n) => conditionTrue_(n, visible, values));
+  if (node.op === 'or') return node.items.some((n) => conditionTrue_(n, visible, values));
+  if (!visible[node.field]) return false;
+  const value = values[node.field];
   const selected = Array.isArray(value) ? value : value ? [value] : [];
-  return condition.values.some((v) => selected.indexOf(v) >= 0);
+  return node.values.some((v) => selected.indexOf(v) >= 0);
 }
 
 /** 유형별로 값을 검증·정리한다. @return {{value: *, error?: string}} */
 function normalizeAnswer_(field, raw) {
-  if (field.type === 'multi') return normalizeMulti_(field, raw);
+  if (field.multiple) return normalizeMultiple_(field, raw);
   const text = toText_(raw);
   if (text === null) return { value: '', error: MESSAGES_.invalid };
   const v = text.trim();
 
   switch (field.type) {
-    case 'select':
+    case 'list':
+    case 'button':
     case 'agree': {
       const choice = normName_(v);
       if (choice && field.options.indexOf(choice) < 0) return { value: '', error: MESSAGES_.notOption };
@@ -297,8 +307,8 @@ function normalizeAnswer_(field, raw) {
   }
 }
 
-/** multi: 배열로 받아 선택지 순서대로 정리한다. */
-function normalizeMulti_(field, raw) {
+/** 여러 개 고르기: 배열로 받아 선택지 순서대로 정리하고 개수(min·max)를 확인한다. */
+function normalizeMultiple_(field, raw) {
   let list;
   if (raw === undefined || raw === null || raw === '') list = [];
   else if (Array.isArray(raw)) list = raw;
@@ -314,7 +324,11 @@ function normalizeMulti_(field, raw) {
     if (field.options.indexOf(choice) < 0) return { value: [], error: MESSAGES_.notOption };
     picked[choice] = true;
   }
-  return { value: field.options.filter((o) => picked[o]) };
+  const value = field.options.filter((o) => picked[o]);
+  // 아무것도 고르지 않은 것은 필수 검사(requiredMessage_)에서 다룬다.
+  if (value.length && value.length < field.min) return { value: value, error: MESSAGES_.tooFew.replace('{n}', field.min) };
+  if (value.length > field.max) return { value: value, error: MESSAGES_.tooMany.replace('{n}', field.max) };
+  return { value: value };
 }
 
 /** 서명: PNG data URL만 받는다. */
@@ -334,12 +348,12 @@ function limitLength_(v, max) {
 }
 
 function requiredMessage_(field) {
+  if (field.multiple) return field.min >= 2 ? MESSAGES_.tooFew.replace('{n}', field.min) : '하나 이상 골라 주세요.';
   switch (field.type) {
-    case 'select':
+    case 'list':
+    case 'button':
     case 'agree':
       return '하나를 골라 주세요.';
-    case 'multi':
-      return '하나 이상 골라 주세요.';
     case 'sign':
       return '서명해 주세요.';
     default:
@@ -351,7 +365,7 @@ function isEmptyValue_(v) {
   return v === '' || v === null || v === undefined || (Array.isArray(v) && v.length === 0);
 }
 
-/** 문자열·숫자만 글자로 받는다. (객체 등은 null) */
+/** 문자열·숫자·참거짓만 글자로 받는다. (객체 등은 null) */
 function toText_(raw) {
   if (raw === undefined || raw === null) return '';
   if (typeof raw === 'string') return raw;
@@ -391,7 +405,7 @@ function buildCheckPage_() {
       report.problems.push(problem_('config.gs', 'DEFAULT_FOLDER_ID의 폴더를 열 수 없습니다. 개발 담당자가 ID를 확인해야 합니다.'));
     }
   } else {
-    report.notes.push("기본 저장 폴더가 정해지지 않아, 저장폴더ID가 빈 양식은 '내 드라이브' 맨 위에 저장됩니다. (config.gs의 DEFAULT_FOLDER_ID)");
+    report.notes.push("기본 저장 폴더가 정해지지 않아, 저장폴더ID가 빈 양식은 '내 드라이브/" + DEFAULT_FOLDER_NAME + "' 폴더에 저장됩니다. (config.gs의 DEFAULT_FOLDER_ID)");
   }
 
   const list = parseFormList_(ss);
@@ -427,12 +441,12 @@ function checkForm_(entry) {
 }
 
 function describeFolder_(form) {
-  let base = '내 드라이브';
+  let base = "'내 드라이브/" + DEFAULT_FOLDER_NAME + "' 폴더";
   try {
     if (form.folderId) base = "'" + DriveApp.getFolderById(form.folderId).getName() + "' 폴더";
     else if (configId_(DEFAULT_FOLDER_ID)) base = "'" + DriveApp.getFolderById(configId_(DEFAULT_FOLDER_ID)).getName() + "' 폴더 (기본 저장 폴더)";
   } catch (err) {
     base = '(폴더를 열 수 없음)';
   }
-  return form.subfolder ? base + ' / ' + form.subfolder : base;
+  return base + ' / ' + (form.subfolder || DEFAULT_SUBFOLDER + ' (기본값)');
 }

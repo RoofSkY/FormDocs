@@ -40,8 +40,14 @@ const CACHE_SECONDS = 300;
 
 // ── 저장 ────────────────────────────────────────────────────
 // 양식목록의 '저장폴더ID'가 비어 있을 때 쓰는 기본 저장 폴더 ID (폴더 주소도 가능).
-// 비워 두면 배포 계정의 내 드라이브 맨 위에 저장된다.
+// 비워 두면 배포 계정의 내 드라이브 맨 위에 DEFAULT_FOLDER_NAME 폴더를 만들어(있으면 그대로) 저장한다.
 const DEFAULT_FOLDER_ID = '';
+
+// DEFAULT_FOLDER_ID가 비어 있을 때 내 드라이브 맨 위에 만들 폴더 이름
+const DEFAULT_FOLDER_NAME = '제출 문서';
+
+// 양식목록의 '하위폴더'가 비어 있을 때 쓰는 기본 하위폴더 규칙 (/ 로 여러 단계)
+const DEFAULT_SUBFOLDER = '{{form_name}}/{{year}}';
 
 // 양식목록의 '파일이름'이 비어 있을 때 쓰는 기본 파일 이름 규칙
 const DEFAULT_FILE_NAME = '{{form_name}}_{{submitted_at}}';
