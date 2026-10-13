@@ -1,10 +1,7 @@
 # 개발자 문서
 
 코드를 고치거나 기능을 추가하는 개발 담당자를 위한 문서입니다.
-프로젝트 규칙(커밋 메시지, 파일 구조, 보안 등)은 [CLAUDE.md](../CLAUDE.md)를 따릅니다.
-
-> CLAUDE.md의 "템플릿 시트" 절은 양식을 시트 탭에 정의하던 초기 설계입니다.
-> 지금 코드는 **양식 문서(Google 문서)에 입력 칸과 모양을 함께 정의**하고, 시트에는 `양식목록` 탭만 둡니다.
+프로젝트 규칙(파일 구조, 보안 등)은 [.claude/rules/spec.md](../.claude/rules/spec.md), 커밋 메시지 규칙은 [AGENTS.md](../AGENTS.md)를 따릅니다.
 
 ## 파일 구조
 
@@ -173,5 +170,5 @@ submitForm(formId, answers)
 기능을 바꾸면 아래도 함께 고칩니다.
 
 - `Setup.gs`의 `guideRows_()`: 템플릿 시트 `사용법` 탭 내용 (`setup` 재실행으로 반영)
-- 루트의 `README.md`와 `doc/` 폴더의 매뉴얼
+- 루트의 `README.md`와 `docs/` 폴더의 매뉴얼
 - `config.gs` 맨 위 설치 안내 주석
